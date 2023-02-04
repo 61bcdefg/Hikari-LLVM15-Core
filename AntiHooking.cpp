@@ -16,10 +16,6 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "llvm/ADT/Triple.h"
-#include "llvm/ExecutionEngine/ExecutionEngine.h"
-#include "llvm/ExecutionEngine/MCJIT.h"
-#include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
-#include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
@@ -42,6 +38,9 @@
 #include <iostream>
 #include <string>
 
+#define AARCH64_SIGNATURE_BR_X16 0xd61f0200
+#define AARCH64_SIGNATURE_BR_X17 0xd61f0220
+
 static cl::opt<string>
     PreCompiledIRPath("adhexrirpath",
                       cl::desc("External Path Pointing To Pre-compiled Anti "
@@ -54,7 +53,6 @@ static cl::opt<bool> AntiRebindSymbol("ah_antirebind",
 
 using namespace llvm;
 using namespace std;
-
 namespace llvm {
 struct AntiHook : public ModulePass {
   static char ID;
@@ -63,7 +61,6 @@ struct AntiHook : public ModulePass {
   bool opaquepointers;
   bool hasobjcmethod;
   Triple triple;
-  map<string, GlobalVariable *> funcname2gv;
   AntiHook() : ModulePass(ID) {
     this->flag = true;
     this->hasobjcmethod = false;
@@ -140,16 +137,13 @@ struct AntiHook : public ModulePass {
   }
   bool runOnModule(Module &M) override {
     for (Function &F : M) {
-      if (toObfuscate(flag, &F, "antihook") && !F.isPresplitCoroutine() &&
-          !F.hasFnAttribute(Attribute::AttrKind::AlwaysInline)) {
+      if (toObfuscate(flag, &F, "antihook")) {
         errs() << "Running AntiHooking On " << F.getName() << "\n";
-        if (F.hasFnAttribute(Attribute::AttrKind::MinSize))
-          F.removeFnAttr(Attribute::AttrKind::MinSize);
-        if (F.hasFnAttribute(Attribute::AttrKind::OptimizeForSize))
-          F.removeFnAttr(Attribute::AttrKind::OptimizeForSize);
-        if (!F.hasOptNone())
-          F.addFnAttr(Attribute::AttrKind::OptimizeNone);
-        HandleInlineHook(&F);
+        if (triple.isAArch64()) {
+          vector<Function *> calledFunctions;
+          calledFunctions.emplace_back(&F);
+          HandleInlineHookAArch64(&F, calledFunctions);
+        }
         if (AntiRebindSymbol)
           for (Instruction &I : instructions(F))
             if (isa<CallInst>(&I) || isa<InvokeInst>(&I)) {
@@ -227,37 +221,18 @@ struct AntiHook : public ModulePass {
         }
       }
     }
-    genMachineCodes(M);
     return true;
   } // End runOnFunction
 
-  void genMachineCodes(Module &M) {
-    InitializeAllTargetInfos();
-    InitializeAllTargets();
-    InitializeAllTargetMCs();
-    InitializeAllAsmPrinters();
-    InitializeAllAsmParsers();
-    InitializeAllDisassemblers();
-    InitializeAllTargetMCAs();
+  void HandleInlineHookAArch64(Function *F,
+                               vector<Function *> &FunctionsToDetect) {
+    // First we locate an insert point to check ourself
+    // The following is equivalent to
+    //     if (*(uint32_t *)(Function + 4) == SIGNATURE || *(uint32_t
+    //     *)(Function + 8) == SIGNATURE)
+    //       Handler();
+    //
 
-    RTDyldMemoryManager *MemMgr = new SectionMemoryManager();
-
-    ExecutionEngine *EE =
-        EngineBuilder(CloneModule(M))
-            .setEngineKind(EngineKind::Kind::JIT)
-            .setOptLevel(CodeGenOpt::Level::None)
-            .setVerifyModules(true)
-            .setMCJITMemoryManager(std::unique_ptr<RTDyldMemoryManager>(MemMgr))
-            .create();
-    EE->finalizeObject();
-    for (Function &F : M)
-      if (GlobalVariable *GV = funcname2gv[F.getName().str()])
-        GV->setInitializer(ConstantInt::get(
-            Type::getInt32Ty(M.getContext()),
-            *(uint32_t *)EE->getFunctionAddress(F.getName().str())));
-  }
-
-  void HandleInlineHook(Function *F) {
     /*
    We split the originalBB A into:
       A < - InlineHook Detection
@@ -267,29 +242,55 @@ struct AntiHook : public ModulePass {
       C < - Original Following BB
    */
 
-    Type *Int32Ty = Type::getInt32Ty(F->getParent()->getContext());
+    uint32_t signatures[] = {AARCH64_SIGNATURE_BR_X16,
+                             AARCH64_SIGNATURE_BR_X17};
 
-    GlobalVariable *GV = new GlobalVariable(
-        *F->getParent(), Int32Ty, true,
-        GlobalValue::LinkageTypes::PrivateLinkage,
-        ConstantInt::getNullValue(Int32Ty), F->getName() + "uint32Signature");
-    funcname2gv[F->getName().str()] = GV;
-    BasicBlock *A = &(F->getEntryBlock());
-    BasicBlock *C = A->splitBasicBlock(A->getFirstNonPHIOrDbgOrLifetime());
-    BasicBlock *B =
-        BasicBlock::Create(A->getContext(), "HookDetectedHandler", F, C);
-    // Change A's terminator to jump to B
-    // We'll add new terminator in B to jump C later
-    A->getTerminator()->eraseFromParent();
+    for (Function *called : FunctionsToDetect) {
+      BasicBlock *A = &(F->getEntryBlock());
+      BasicBlock *C = A->splitBasicBlock(A->getFirstNonPHIOrDbgOrLifetime());
+      BasicBlock *A2 = BasicBlock::Create(A->getContext(), "", F, C);
+      BasicBlock *B =
+          BasicBlock::Create(A->getContext(), "HookDetectedHandler", F, C);
+      // Change A's terminator to jump to B
+      // We'll add new terminator in B to jump C later
+      A->getTerminator()->eraseFromParent();
 
-    IRBuilder<> IRBA(A);
-    IRBuilder<> IRBB(B);
+      IRBuilder<> IRBA(A);
+      IRBuilder<> IRBA2(A2);
+      IRBuilder<> IRBB(B);
 
-    Value *toDetect = IRBA.CreateLoad(Int32Ty, F);
-    Value *ICmpNE =
-        IRBA.CreateICmpNE(toDetect, IRBA.CreateLoad(GV->getValueType(), GV));
-    IRBA.CreateCondBr(ICmpNE, B, C);
-    CreateCallbackAndJumpBack(&IRBB, C);
+      Type *Int64Ty = Type::getInt64Ty(F->getContext());
+      Type *Int32Ty = Type::getInt32Ty(F->getContext());
+      Type *Int32PtrTy = Type::getInt32PtrTy(F->getContext());
+
+      BasicBlock *SwDefault =
+          BasicBlock::Create(F->getContext(), "SwitchDefault", F);
+      BasicBlock *SwDefault2 =
+          BasicBlock::Create(F->getContext(), "SwitchDefault2", F);
+      BranchInst::Create(A2, SwDefault);
+      BranchInst::Create(C, SwDefault2);
+      Value *toDetect = IRBA.CreateLoad(
+          Int32Ty, IRBA.CreateIntToPtr(
+                       IRBA.CreateAdd(IRBA.CreatePtrToInt(called, Int64Ty),
+                                      ConstantInt::get(Int64Ty, 4)),
+                       Int32PtrTy));
+      Value *toDetect2 = IRBA2.CreateLoad(
+          Int32Ty, IRBA2.CreateIntToPtr(
+                       IRBA2.CreateAdd(IRBA2.CreatePtrToInt(called, Int64Ty),
+                                       ConstantInt::get(Int64Ty, 8)),
+                       Int32PtrTy));
+      SwitchInst *SI = IRBA.CreateSwitch(A, SwDefault, 0);
+      SwitchInst *SI2 = IRBA2.CreateSwitch(A2, SwDefault2, 0);
+      SI->setCondition(toDetect);
+      SI2->setCondition(toDetect2);
+      for (uint32_t sig : signatures) {
+        SI->addCase(
+            ConstantInt::get(IntegerType::get(F->getContext(), 32), sig), B);
+        SI2->addCase(
+            ConstantInt::get(IntegerType::get(F->getContext(), 32), sig), B);
+      }
+      CreateCallbackAndJumpBack(&IRBB, C);
+    }
   }
 
   void HandleObjcRuntimeHook(Function *ObjcMethodImp, string classname,

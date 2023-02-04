@@ -21,14 +21,6 @@ if (CMAKE_SYSTEM_NAME MATCHES "Linux")
 
             LINK_COMPONENTS
             Linker
-            AllTargetsAsmParsers
-            AllTargetsCodeGens
-            AllTargetsDescs
-            AllTargetsInfos
-            AllTargetsDisassemblers
-            AllTargetsMCAs
-            ExecutionEngine
-            MCJIT
             )
 else()
     add_llvm_component_library(LLVMObfuscation
@@ -50,16 +42,6 @@ else()
             Obfuscation.cpp
             DEPENDS
             intrinsics_gen
-
-            LINK_COMPONENTS
-            AllTargetsAsmParsers
-            AllTargetsCodeGens
-            AllTargetsDescs
-            AllTargetsInfos
-            AllTargetsDisassemblers
-            AllTargetsMCAs
-            ExecutionEngine
-            MCJIT
             )
 endif()
 execute_process(
