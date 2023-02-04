@@ -38,8 +38,12 @@
 #include <iostream>
 #include <string>
 
-#define AARCH64_SIGNATURE_BR_X16 0xd61f0200
-#define AARCH64_SIGNATURE_BR_X17 0xd61f0220
+// Arm A64 Instruction Set for A-profile architecture 2022-12, Page 56
+#define AARCH64_SIGNATURE_B 0b000101
+// Arm A64 Instruction Set for A-profile architecture 2022-12, Page 75
+#define AARCH64_SIGNATURE_BR 0b1101011000011111000000
+// Arm A64 Instruction Set for A-profile architecture 2022-12, Page 79
+#define AARCH64_SIGNATURE_BRK 0b11010100001
 
 static cl::opt<string>
     PreCompiledIRPath("adhexrirpath",
@@ -140,9 +144,7 @@ struct AntiHook : public ModulePass {
       if (toObfuscate(flag, &F, "antihook")) {
         errs() << "Running AntiHooking On " << F.getName() << "\n";
         if (triple.isAArch64()) {
-          vector<Function *> calledFunctions;
-          calledFunctions.emplace_back(&F);
-          HandleInlineHookAArch64(&F, calledFunctions);
+          HandleInlineHookAArch64(&F);
         }
         if (AntiRebindSymbol)
           for (Instruction &I : instructions(F))
@@ -224,73 +226,52 @@ struct AntiHook : public ModulePass {
     return true;
   } // End runOnFunction
 
-  void HandleInlineHookAArch64(Function *F,
-                               vector<Function *> &FunctionsToDetect) {
-    // First we locate an insert point to check ourself
-    // The following is equivalent to
-    //     if (*(uint32_t *)(Function + 4) == SIGNATURE || *(uint32_t
-    //     *)(Function + 8) == SIGNATURE)
-    //       Handler();
-    //
+  void HandleInlineHookAArch64(Function *F) {
+    BasicBlock *A = &(F->getEntryBlock());
+    BasicBlock *C = A->splitBasicBlock(A->getFirstNonPHIOrDbgOrLifetime());
+    BasicBlock *B =
+        BasicBlock::Create(F->getContext(), "HookDetectedHandler", F);
+    BasicBlock *Detect =
+        BasicBlock::Create(F->getContext(), "", F);
+    BasicBlock *Detect2 = BasicBlock::Create(F->getContext(), "", F);
+    // Change A's terminator to jump to B
+    // We'll add new terminator in B to jump C later
+    A->getTerminator()->eraseFromParent();
+    BranchInst::Create(Detect, A);
 
-    /*
-   We split the originalBB A into:
-      A < - InlineHook Detection
-      | \
-      |  B for handler()
-      | /
-      C < - Original Following BB
-   */
+    IRBuilder<> IRBDetect(Detect);
+    IRBuilder<> IRBDetect2(Detect2);
+    IRBuilder<> IRBB(B);
 
-    uint32_t signatures[] = {AARCH64_SIGNATURE_BR_X16,
-                             AARCH64_SIGNATURE_BR_X17};
+    Type *Int64Ty = Type::getInt64Ty(F->getContext());
+    Type *Int32Ty = Type::getInt32Ty(F->getContext());
+    Type *Int32PtrTy = Type::getInt32PtrTy(F->getContext());
 
-    for (Function *called : FunctionsToDetect) {
-      BasicBlock *A = &(F->getEntryBlock());
-      BasicBlock *C = A->splitBasicBlock(A->getFirstNonPHIOrDbgOrLifetime());
-      BasicBlock *A2 = BasicBlock::Create(A->getContext(), "", F, C);
-      BasicBlock *B =
-          BasicBlock::Create(A->getContext(), "HookDetectedHandler", F, C);
-      // Change A's terminator to jump to B
-      // We'll add new terminator in B to jump C later
-      A->getTerminator()->eraseFromParent();
+    Value *Load =
+        IRBDetect.CreateLoad(Int32Ty, IRBDetect.CreateBitCast(F, Int32PtrTy));
+    Value *LS2 = IRBDetect.CreateLShr(Load, ConstantInt::get(Int32Ty, 26));
+    Value *ICmpEQ2 = IRBDetect.CreateICmpEQ(LS2, ConstantInt::get(Int32Ty, AARCH64_SIGNATURE_B));
+    Value *LS3 = IRBDetect.CreateLShr(Load, ConstantInt::get(Int32Ty, 21));
+    Value *ICmpEQ3 = IRBDetect.CreateICmpEQ(LS3, ConstantInt::get(Int32Ty, AARCH64_SIGNATURE_BRK));
+    Value *Or = IRBDetect.CreateOr(ICmpEQ2, ICmpEQ3);
+    IRBDetect.CreateCondBr(Or, B, Detect2);
 
-      IRBuilder<> IRBA(A);
-      IRBuilder<> IRBA2(A2);
-      IRBuilder<> IRBB(B);
-
-      Type *Int64Ty = Type::getInt64Ty(F->getContext());
-      Type *Int32Ty = Type::getInt32Ty(F->getContext());
-      Type *Int32PtrTy = Type::getInt32PtrTy(F->getContext());
-
-      BasicBlock *SwDefault =
-          BasicBlock::Create(F->getContext(), "SwitchDefault", F);
-      BasicBlock *SwDefault2 =
-          BasicBlock::Create(F->getContext(), "SwitchDefault2", F);
-      BranchInst::Create(A2, SwDefault);
-      BranchInst::Create(C, SwDefault2);
-      Value *toDetect = IRBA.CreateLoad(
-          Int32Ty, IRBA.CreateIntToPtr(
-                       IRBA.CreateAdd(IRBA.CreatePtrToInt(called, Int64Ty),
-                                      ConstantInt::get(Int64Ty, 4)),
-                       Int32PtrTy));
-      Value *toDetect2 = IRBA2.CreateLoad(
-          Int32Ty, IRBA2.CreateIntToPtr(
-                       IRBA2.CreateAdd(IRBA2.CreatePtrToInt(called, Int64Ty),
-                                       ConstantInt::get(Int64Ty, 8)),
-                       Int32PtrTy));
-      SwitchInst *SI = IRBA.CreateSwitch(A, SwDefault, 0);
-      SwitchInst *SI2 = IRBA2.CreateSwitch(A2, SwDefault2, 0);
-      SI->setCondition(toDetect);
-      SI2->setCondition(toDetect2);
-      for (uint32_t sig : signatures) {
-        SI->addCase(
-            ConstantInt::get(IntegerType::get(F->getContext(), 32), sig), B);
-        SI2->addCase(
-            ConstantInt::get(IntegerType::get(F->getContext(), 32), sig), B);
-      }
-      CreateCallbackAndJumpBack(&IRBB, C);
-    }
+    Value *PTI = IRBDetect2.CreatePtrToInt(F, Int64Ty);
+    Value *AddFour = IRBDetect2.CreateAdd(PTI, ConstantInt::get(Int64Ty, 4));
+    Value *ITP = IRBDetect2.CreateIntToPtr(AddFour, Int32PtrTy);
+    Value *Load2 = IRBDetect2.CreateLoad(Int32Ty, ITP);
+    Value *LS4 = IRBDetect2.CreateLShr(Load2, ConstantInt::get(Int32Ty, 10));
+    Value *ICmpEQ4 = IRBDetect2.CreateICmpEQ(
+        LS4, ConstantInt::get(Int32Ty, AARCH64_SIGNATURE_BR));
+    Value *AddEight = IRBDetect2.CreateAdd(PTI, ConstantInt::get(Int64Ty, 8));
+    Value *ITP2 = IRBDetect2.CreateIntToPtr(AddEight, Int32PtrTy);
+    Value *Load3 = IRBDetect2.CreateLoad(Int32Ty, ITP2);
+    Value *LS5 = IRBDetect2.CreateLShr(Load3, ConstantInt::get(Int32Ty, 10));
+    Value *ICmpEQ5 = IRBDetect2.CreateICmpEQ(
+        LS5, ConstantInt::get(Int32Ty, AARCH64_SIGNATURE_BR));
+    Value *Or2 = IRBDetect2.CreateOr(ICmpEQ4, ICmpEQ5);
+    IRBDetect2.CreateCondBr(Or2, B, C);
+    CreateCallbackAndJumpBack(&IRBB, C);
   }
 
   void HandleObjcRuntimeHook(Function *ObjcMethodImp, string classname,
