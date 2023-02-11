@@ -31,11 +31,12 @@ using namespace std;
 namespace llvm {
 struct StringEncryption : public ModulePass {
   static char ID;
+  bool flag;
+  bool opaquepointers;
   map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
       encstatus;
   map<GlobalVariable *, pair<Constant *, GlobalVariable *>> mgv2keys;
   vector<GlobalVariable *> genedgv;
-  bool flag;
   StringEncryption() : ModulePass(ID) { this->flag = true; }
 
   StringEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
@@ -83,6 +84,7 @@ struct StringEncryption : public ModulePass {
   bool runOnModule(Module &M) override {
     // in runOnModule. We simple iterate function list and dispatch functions
     // to handlers
+    this->opaquepointers = !M.getContext().supportsTypedPointers();
     for (Function &F : M) {
       if (toObfuscate(flag, &F, "strenc")) {
         errs() << "Running StringEncryption On " << F.getName() << "\n";
@@ -109,8 +111,6 @@ struct StringEncryption : public ModulePass {
           if (User *U = dyn_cast<User>(Op))
             Users.insert(U);
           Users.insert(&I);
-          // errs() << ">>>>> emplace_back(), global var name: " << G->getName()
-          // << "\n";
           Globals.emplace_back(G);
         }
     set<GlobalVariable *> rawStrings;
@@ -126,13 +126,14 @@ struct StringEncryption : public ModulePass {
     }
     Globals.erase(end, Globals.end());
 
-    vector<GlobalVariable *> transedGlobals = {};
+    vector<GlobalVariable *> transedGlobals;
 
     do {
       for (GlobalVariable *GV : Globals) {
         if (std::find(transedGlobals.begin(), transedGlobals.end(), GV) ==
             transedGlobals.end()) {
           bool breakThisFor = false;
+          vector<GlobalVariable *> unhandleablegvs;
           if (handleableGV(GV)) {
             if (GlobalVariable *CastedGV = dyn_cast<GlobalVariable>(
                     GV->getInitializer()->stripPointerCasts())) {
@@ -154,16 +155,17 @@ struct StringEncryption : public ModulePass {
                       ->stripPointerCasts()));
             } else if (isa<ConstantDataSequential>(GV->getInitializer())) {
               rawStrings.insert(GV);
-            } else if (isa<ConstantStruct>(GV->getInitializer())) {
-              ConstantStruct *CS = cast<ConstantStruct>(GV->getInitializer());
+            } else if (ConstantStruct *CS =
+                           dyn_cast<ConstantStruct>(GV->getInitializer())) {
               for (unsigned i = 0; i < CS->getNumOperands(); i++) {
                 Constant *Op = CS->getOperand(i);
                 if (GlobalVariable *OpGV =
                         dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
                   if (!handleableGV(OpGV)) {
+                    unhandleablegvs.emplace_back(OpGV);
                     continue;
                   }
-                  Users.insert(Op);
+                  Users.insert(opaquepointers ? CS : Op);
                   if (std::find(Globals.begin(), Globals.end(), OpGV) ==
                       Globals.end()) {
                     Globals.emplace_back(OpGV);
@@ -171,42 +173,47 @@ struct StringEncryption : public ModulePass {
                   }
                 }
               }
-            } else if (isa<ConstantArray>(GV->getInitializer())) {
-              ConstantArray *CA = dyn_cast<ConstantArray>(GV->getInitializer());
+            } else if (ConstantArray *CA =
+                           dyn_cast<ConstantArray>(GV->getInitializer())) {
               for (unsigned j = 0; j < CA->getNumOperands(); j++) {
-                Constant *Opp = CA->getOperand(j);
-                if (GlobalVariable *OppGV =
-                        dyn_cast<GlobalVariable>(Opp->stripPointerCasts())) {
-                  if (!handleableGV(OppGV)) {
+                Constant *Op = CA->getOperand(j);
+                if (GlobalVariable *OpGV =
+                        dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
+                  if (!handleableGV(OpGV)) {
+                    unhandleablegvs.emplace_back(OpGV);
                     continue;
                   }
-                  Users.insert(Opp);
-                  if (std::find(Globals.begin(), Globals.end(), OppGV) ==
+                  Users.insert(opaquepointers ? CA : Op);
+                  if (std::find(Globals.begin(), Globals.end(), OpGV) ==
                       Globals.end()) {
-                    Globals.emplace_back(OppGV);
+                    Globals.emplace_back(OpGV);
                     breakThisFor = true;
                   }
                 }
               }
             }
-          } else if (std::find(genedgv.begin(), genedgv.end(), GV) !=
-                     genedgv.end()) {
-            pair<Constant *, GlobalVariable *> mgv2keysval = mgv2keys[GV];
-            if (GV->getInitializer()->getType() ==
-                StructType::getTypeByName(Func->getParent()->getContext(),
-                                          "struct.__NSConstantString_tag")) {
-              GlobalVariable *rawgv = cast<GlobalVariable>(
-                  cast<ConstantStruct>(GV->getInitializer())
-                      ->getOperand(2)
-                      ->stripPointerCasts());
-              mgv2keysval = mgv2keys[rawgv];
-              if (mgv2keysval.first && mgv2keysval.second) {
-                GV2Keys[rawgv] = mgv2keysval;
-              }
-            } else if (mgv2keysval.first && mgv2keysval.second) {
-              GV2Keys[GV] = mgv2keysval;
-            }
+          } else {
+            unhandleablegvs.emplace_back(GV);
           }
+          for (GlobalVariable *ugv : unhandleablegvs)
+            if (std::find(genedgv.begin(), genedgv.end(), ugv) !=
+                genedgv.end()) {
+              pair<Constant *, GlobalVariable *> mgv2keysval = mgv2keys[ugv];
+              if (ugv->getInitializer()->getType() ==
+                  StructType::getTypeByName(Func->getParent()->getContext(),
+                                            "struct.__NSConstantString_tag")) {
+                GlobalVariable *rawgv = cast<GlobalVariable>(
+                    cast<ConstantStruct>(ugv->getInitializer())
+                        ->getOperand(2)
+                        ->stripPointerCasts());
+                mgv2keysval = mgv2keys[rawgv];
+                if (mgv2keysval.first && mgv2keysval.second) {
+                  GV2Keys[rawgv] = mgv2keysval;
+                }
+              } else if (mgv2keysval.first && mgv2keysval.second) {
+                GV2Keys[ugv] = mgv2keysval;
+              }
+            }
           transedGlobals.emplace_back(GV);
           if (breakThisFor)
             break;
@@ -297,8 +304,7 @@ struct StringEncryption : public ModulePass {
         DummyConst = ConstantDataArray::get(GV->getParent()->getContext(),
                                             ArrayRef<uint64_t>(dummy));
       } else {
-        errs() << "Unsupported CDS Type\n";
-        abort();
+        llvm_unreachable("Unsupported CDS Type");
       }
       // Prepare new rawGV
       GlobalVariable *EncryptedRawGV = new GlobalVariable(
