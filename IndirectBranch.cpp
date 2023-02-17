@@ -28,6 +28,7 @@ struct IndirectBranch : public FunctionPass {
   static char ID;
   bool flag;
   bool initialized;
+  Function *valwrapfunc;
   map<BasicBlock *, unsigned long long> indexmap;
   map<Function *, ConstantInt *> encmap;
   IndirectBranch() : FunctionPass(ID) {
@@ -70,6 +71,31 @@ struct IndirectBranch : public FunctionPass {
         M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
         BlockAddressArray, "IndirectBranchingGlobalTable");
     appendToCompilerUsed(M, {Table});
+    // valwrap - make what IDA Pro displays in the pseudocode window even weirder.
+    // In IDA Pro 7.7.220118
+    // Original
+    /* void __cdecl -[ViewController viewDidLoad](ViewController *self, SEL a2)
+     * {
+     * return off_10000D0D0();
+     * }
+     */
+    // New
+    /* void __cdecl -[ViewController viewDidLoad](ViewController *self, SEL a2)
+     * {
+     * __int64 v2; // kr00_8
+     * v2 = nullsub_1(off_10000D0D0);
+     * __asm { BR              X0 }
+     * }
+     */
+    Function *valwrap = Function::Create(
+        FunctionType::get(Type::getInt8PtrTy(M.getContext()),
+                          {Type::getInt8PtrTy(M.getContext())}, false),
+        GlobalValue::LinkageTypes::PrivateLinkage,
+        "IndirechBranchTargetWrapper", M);
+    BasicBlock *BB = BasicBlock::Create(valwrap->getContext(), "", valwrap);
+    ReturnInst::Create(valwrap->getContext(), valwrap->getArg(0), BB);
+    appendToCompilerUsed(M, {valwrap});
+    this->valwrapfunc = valwrap;
     this->initialized = true;
     return true;
   }
@@ -174,21 +200,23 @@ struct IndirectBranch : public FunctionPass {
         Value *GEP = IRB.CreateGEP(
             LoadFrom->getValueType(), IRB.CreateLoad(LoadFrom->getType(), AI),
             {zero, IRB.CreateLoad(index->getType(), AI2)});
-        AllocaInst *AI3 = IRB.CreateAlloca(GEP->getType());
-        IRB.CreateStore(GEP, AI3);
-        gepptr = IRB.CreateLoad(Type::getInt8PtrTy(Func.getContext()),
-                                IRB.CreateLoad(AI3->getAllocatedType(), AI3));
+        Value *GEPLI = IRB.CreateLoad(GEP->getType(), GEP);
+        AllocaInst *AI3 = IRB.CreateAlloca(GEPLI->getType());
+        IRB.CreateStore(GEPLI, AI3);
         if (!EncryptJumpTarget)
-          LI = IRB.CreateLoad(AI3->getAllocatedType(),
-                              IRB.CreateLoad(AI3->getAllocatedType(), AI3),
+          LI = IRB.CreateLoad(AI3->getAllocatedType(), AI3,
                               "IndirectBranchingTargetAddress");
+        else
+          gepptr = IRB.CreateLoad(Type::getInt8PtrTy(Func.getContext()),
+                                  IRB.CreateLoad(AI3->getAllocatedType(), AI3));
       } else {
         Value *GEP = IRB.CreateGEP(LoadFrom->getValueType(), LoadFrom,
                                    {zero, RealIndex});
-        gepptr = IRB.CreateLoad(Type::getInt8PtrTy(Func.getContext()), GEP);
         if (!EncryptJumpTarget)
           LI = IRB.CreateLoad(GEP->getType(), GEP,
                               "IndirectBranchingTargetAddress");
+        else
+          gepptr = IRB.CreateLoad(Type::getInt8PtrTy(Func.getContext()), GEP);
       }
       if (EncryptJumpTarget) {
         ConstantInt *encenckey = ConstantInt::get(
@@ -206,10 +234,9 @@ struct IndirectBranch : public FunctionPass {
                            IRB.CreateSub(zero, enckeyLoad),
                            "IndirectBranchingTargetAddress");
         SubstituteImpl::substituteXor(dyn_cast<BinaryOperator>(enckeyLoad));
-        if (!BI->isConditional())
-          SubstituteImpl::substituteXor(dyn_cast<BinaryOperator>(RealIndex));
       }
-      IndirectBrInst *indirBr = IndirectBrInst::Create(LI, BBs.size());
+      IndirectBrInst *indirBr =
+          IndirectBrInst::Create(IRB.CreateCall(valwrapfunc, {LI}), BBs.size());
       for (BasicBlock *BB : BBs)
         indirBr->addDestination(BB);
       ReplaceInstWithInst(BI, indirBr);
