@@ -122,6 +122,11 @@ static cl::opt<int> ConditionExpressionComplexity(
              "condition"),
     cl::value_desc("Complexity"), cl::init(3), cl::Optional);
 
+static cl::opt<bool>
+    OnlyJunkAssembly("bcf_onlyjunkasm",
+                     cl::desc("only add junk assembly to altered basic block"),
+                     cl::value_desc("only add junk assembly"), cl::init(false),
+                     cl::Optional);
 static cl::opt<bool> JunkAssembly(
     "bcf_junkasm",
     cl::desc("Whether to add junk assembly to altered basic block"),
@@ -129,11 +134,11 @@ static cl::opt<bool> JunkAssembly(
 static cl::opt<int> MaxNumberOfJunkAssembly(
     "bcf_junkasm_maxnum",
     cl::desc("The maximum number of junk assembliy per altered basic block"),
-    cl::value_desc("max number of junk assembly"), cl::init(3), cl::Optional);
+    cl::value_desc("max number of junk assembly"), cl::init(4), cl::Optional);
 static cl::opt<int> MinNumberOfJunkAssembly(
     "bcf_junkasm_minnum",
     cl::desc("The minimum number of junk assembliy per altered basic block"),
-    cl::value_desc("min number of junk assembly"), cl::init(1), cl::Optional);
+    cl::value_desc("min number of junk assembly"), cl::init(2), cl::Optional);
 static cl::opt<bool> CreateFunctionForOpaquePredicate(
     "bcf_createfunc", cl::desc("Create function for each opaque predicate"),
     cl::value_desc("create function"), cl::init(false), cl::Optional);
@@ -203,11 +208,8 @@ struct BogusControlFlow : public FunctionPass {
     }
 
     // If fla annotations
-    if (toObfuscate(flag, &F, "bcf")) {
-      if (F.isPresplitCoroutine())
-        return false;
-      if (F.getName().startswith("HikariBCFOpaquePredicateFunction"))
-        return false;
+    if (toObfuscate(flag, &F, "bcf") && !F.isPresplitCoroutine() &&
+        readAnnotate(&F).find("bcfopfunc") == string::npos) {
       errs() << "Running BogusControlFlow On " << F.getName() << "\n";
       bogus(F);
       doF(F);
@@ -297,7 +299,8 @@ struct BogusControlFlow : public FunctionPass {
     // Now that all the blocks are created,
     // we modify the terminators to adjust the control flow.
 
-    alteredBB->getTerminator()->eraseFromParent();
+    if (!OnlyJunkAssembly)
+      alteredBB->getTerminator()->eraseFromParent();
     basicBlock->getTerminator()->eraseFromParent();
 
     // Preparing a condition..
@@ -351,10 +354,8 @@ struct BogusControlFlow : public FunctionPass {
       BranchInst::Create(originalBBpart2, alteredBB, condition2, originalBB);
       break;
     }
-    default: {
-      BranchInst::Create(originalBBpart2, originalBB, condition2, originalBB);
-      break;
-    }
+    default:
+      llvm_unreachable("wtf?");
     }
   } // end of addBogusFlow()
 
@@ -370,231 +371,235 @@ struct BogusControlFlow : public FunctionPass {
   BasicBlock *createAlteredBasicBlock(BasicBlock *basicBlock,
                                       const Twine &Name = "gen",
                                       Function *F = nullptr) {
-    // Useful to remap the informations concerning instructions.
-    ValueToValueMapTy VMap;
-    BasicBlock *alteredBB = CloneBasicBlock(basicBlock, VMap, Name, F);
-    // Remap operands.
-    BasicBlock::iterator ji = basicBlock->begin();
-    for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end();
-         i != e; ++i) {
-      // Loop over the operands of the instruction
-      for (User::op_iterator opi = i->op_begin(), ope = i->op_end(); opi != ope;
-           ++opi) {
-        // get the value for the operand
-        Value *v = MapValue(
-            *opi, VMap, RF_NoModuleLevelChanges,
-            0); // https://github.com/eshard/obfuscator-llvm/commit/e8ba79332bd63a3eb38eb85a636951f1cb1f22df
-        if (v != 0)
-          *opi = v;
-      }
-      // Remap phi nodes' incoming blocks.
-      if (PHINode *pn = dyn_cast<PHINode>(i)) {
-        for (unsigned j = 0, e = pn->getNumIncomingValues(); j != e; ++j) {
-          Value *v = MapValue(pn->getIncomingBlock(j), VMap, RF_None, 0);
+    BasicBlock *alteredBB =
+        OnlyJunkAssembly ? BasicBlock::Create(F->getContext(), "", F) : nullptr;
+    if (!OnlyJunkAssembly) {
+      // Useful to remap the informations concerning instructions.
+      ValueToValueMapTy VMap;
+      alteredBB = CloneBasicBlock(basicBlock, VMap, Name, F);
+      // Remap operands.
+      BasicBlock::iterator ji = basicBlock->begin();
+      for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end();
+           i != e; ++i) {
+        // Loop over the operands of the instruction
+        for (User::op_iterator opi = i->op_begin(), ope = i->op_end();
+             opi != ope; ++opi) {
+          // get the value for the operand
+          Value *v = MapValue(
+              *opi, VMap, RF_NoModuleLevelChanges,
+              0); // https://github.com/eshard/obfuscator-llvm/commit/e8ba79332bd63a3eb38eb85a636951f1cb1f22df
           if (v != 0)
-            pn->setIncomingBlock(j, cast<BasicBlock>(v));
+            *opi = v;
         }
-      }
-      // Remap attached metadata.
-      SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
-      i->getAllMetadata(MDs);
-      // important for compiling with DWARF, using option -g.
-      i->setDebugLoc(ji->getDebugLoc());
-      ji++;
-    } // The instructions' informations are now all correct
+        // Remap phi nodes' incoming blocks.
+        if (PHINode *pn = dyn_cast<PHINode>(i)) {
+          for (unsigned j = 0, e = pn->getNumIncomingValues(); j != e; ++j) {
+            Value *v = MapValue(pn->getIncomingBlock(j), VMap, RF_None, 0);
+            if (v != 0)
+              pn->setIncomingBlock(j, cast<BasicBlock>(v));
+          }
+        }
+        // Remap attached metadata.
+        SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
+        i->getAllMetadata(MDs);
+        // important for compiling with DWARF, using option -g.
+        i->setDebugLoc(ji->getDebugLoc());
+        ji++;
+      } // The instructions' informations are now all correct
 
-    // add random instruction in the middle of the bloc. This part can be
-    // improve
-    for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end();
-         i != e; ++i) {
-      // in the case we find binary operator, we modify slightly this part by
-      // randomly insert some instructions
-      if (i->isBinaryOp()) { // binary instructions
-        unsigned int opcode = i->getOpcode();
-        Instruction *op, *op1 = nullptr;
-        Twine *var = new Twine("_");
-        // treat differently float or int
-        // Binary int
-        if (opcode == Instruction::Add || opcode == Instruction::Sub ||
-            opcode == Instruction::Mul || opcode == Instruction::UDiv ||
-            opcode == Instruction::SDiv || opcode == Instruction::URem ||
-            opcode == Instruction::SRem || opcode == Instruction::Shl ||
-            opcode == Instruction::LShr || opcode == Instruction::AShr ||
-            opcode == Instruction::And || opcode == Instruction::Or ||
-            opcode == Instruction::Xor) {
-          for (int random = (int)llvm::cryptoutils->get_range(10); random < 10;
-               ++random) {
-            switch (llvm::cryptoutils->get_range(4)) { // to improve
+      // add random instruction in the middle of the bloc. This part can be
+      // improve
+      for (BasicBlock::iterator i = alteredBB->begin(), e = alteredBB->end();
+           i != e; ++i) {
+        // in the case we find binary operator, we modify slightly this part by
+        // randomly insert some instructions
+        if (i->isBinaryOp()) { // binary instructions
+          unsigned int opcode = i->getOpcode();
+          Instruction *op, *op1 = nullptr;
+          Twine *var = new Twine("_");
+          // treat differently float or int
+          // Binary int
+          if (opcode == Instruction::Add || opcode == Instruction::Sub ||
+              opcode == Instruction::Mul || opcode == Instruction::UDiv ||
+              opcode == Instruction::SDiv || opcode == Instruction::URem ||
+              opcode == Instruction::SRem || opcode == Instruction::Shl ||
+              opcode == Instruction::LShr || opcode == Instruction::AShr ||
+              opcode == Instruction::And || opcode == Instruction::Or ||
+              opcode == Instruction::Xor) {
+            for (int random = (int)llvm::cryptoutils->get_range(10);
+                 random < 10; ++random) {
+              switch (llvm::cryptoutils->get_range(4)) { // to improve
+              case 0:                                    // do nothing
+                break;
+              case 1:
+                op = BinaryOperator::CreateNeg(i->getOperand(0), *var, &*i);
+                op1 = BinaryOperator::Create(Instruction::Add, op,
+                                             i->getOperand(1), "gen", &*i);
+                break;
+              case 2:
+                op1 = BinaryOperator::Create(Instruction::Sub, i->getOperand(0),
+                                             i->getOperand(1), *var, &*i);
+                op = BinaryOperator::Create(Instruction::Mul, op1,
+                                            i->getOperand(1), "gen", &*i);
+                break;
+              case 3:
+                op = BinaryOperator::Create(Instruction::Shl, i->getOperand(0),
+                                            i->getOperand(1), *var, &*i);
+                break;
+              }
+            }
+          }
+          // Binary float
+          if (opcode == Instruction::FAdd || opcode == Instruction::FSub ||
+              opcode == Instruction::FMul || opcode == Instruction::FDiv ||
+              opcode == Instruction::FRem) {
+            for (int random = (int)llvm::cryptoutils->get_range(10);
+                 random < 10; ++random) {
+              switch (llvm::cryptoutils->get_range(3)) { // can be improved
+              case 0:                                    // do nothing
+                break;
+              case 1:
+                op = UnaryOperator::CreateFNeg(i->getOperand(0), *var, &*i);
+                op1 = BinaryOperator::Create(Instruction::FAdd, op,
+                                             i->getOperand(1), "gen", &*i);
+                break;
+              case 2:
+                op = BinaryOperator::Create(Instruction::FSub, i->getOperand(0),
+                                            i->getOperand(1), *var, &*i);
+                op1 = BinaryOperator::Create(Instruction::FMul, op,
+                                             i->getOperand(1), "gen", &*i);
+                break;
+              }
+            }
+          }
+          if (opcode == Instruction::ICmp) { // Condition (with int)
+            ICmpInst *currentI = (ICmpInst *)(&i);
+            switch (llvm::cryptoutils->get_range(3)) { // must be improved
             case 0:                                    // do nothing
               break;
             case 1:
-              op = BinaryOperator::CreateNeg(i->getOperand(0), *var, &*i);
-              op1 = BinaryOperator::Create(Instruction::Add, op,
-                                           i->getOperand(1), "gen", &*i);
+              currentI->swapOperands();
               break;
-            case 2:
-              op1 = BinaryOperator::Create(Instruction::Sub, i->getOperand(0),
-                                           i->getOperand(1), *var, &*i);
-              op = BinaryOperator::Create(Instruction::Mul, op1,
-                                          i->getOperand(1), "gen", &*i);
-              break;
-            case 3:
-              op = BinaryOperator::Create(Instruction::Shl, i->getOperand(0),
-                                          i->getOperand(1), *var, &*i);
+            case 2: // randomly change the predicate
+              switch (llvm::cryptoutils->get_range(10)) {
+              case 0:
+                currentI->setPredicate(ICmpInst::ICMP_EQ);
+                break; // equal
+              case 1:
+                currentI->setPredicate(ICmpInst::ICMP_NE);
+                break; // not equal
+              case 2:
+                currentI->setPredicate(ICmpInst::ICMP_UGT);
+                break; // unsigned greater than
+              case 3:
+                currentI->setPredicate(ICmpInst::ICMP_UGE);
+                break; // unsigned greater or equal
+              case 4:
+                currentI->setPredicate(ICmpInst::ICMP_ULT);
+                break; // unsigned less than
+              case 5:
+                currentI->setPredicate(ICmpInst::ICMP_ULE);
+                break; // unsigned less or equal
+              case 6:
+                currentI->setPredicate(ICmpInst::ICMP_SGT);
+                break; // signed greater than
+              case 7:
+                currentI->setPredicate(ICmpInst::ICMP_SGE);
+                break; // signed greater or equal
+              case 8:
+                currentI->setPredicate(ICmpInst::ICMP_SLT);
+                break; // signed less than
+              case 9:
+                currentI->setPredicate(ICmpInst::ICMP_SLE);
+                break; // signed less or equal
+              }
               break;
             }
           }
-        }
-        // Binary float
-        if (opcode == Instruction::FAdd || opcode == Instruction::FSub ||
-            opcode == Instruction::FMul || opcode == Instruction::FDiv ||
-            opcode == Instruction::FRem) {
-          for (int random = (int)llvm::cryptoutils->get_range(10); random < 10;
-               ++random) {
-            switch (llvm::cryptoutils->get_range(3)) { // can be improved
+          if (opcode == Instruction::FCmp) { // Conditions (with float)
+            FCmpInst *currentI = (FCmpInst *)(&i);
+            switch (llvm::cryptoutils->get_range(3)) { // must be improved
             case 0:                                    // do nothing
               break;
             case 1:
-              op = UnaryOperator::CreateFNeg(i->getOperand(0), *var, &*i);
-              op1 = BinaryOperator::Create(Instruction::FAdd, op,
-                                           i->getOperand(1), "gen", &*i);
+              currentI->swapOperands();
               break;
-            case 2:
-              op = BinaryOperator::Create(Instruction::FSub, i->getOperand(0),
-                                          i->getOperand(1), *var, &*i);
-              op1 = BinaryOperator::Create(Instruction::FMul, op,
-                                           i->getOperand(1), "gen", &*i);
+            case 2: // randomly change the predicate
+              switch (llvm::cryptoutils->get_range(10)) {
+              case 0:
+                currentI->setPredicate(FCmpInst::FCMP_OEQ);
+                break; // ordered and equal
+              case 1:
+                currentI->setPredicate(FCmpInst::FCMP_ONE);
+                break; // ordered and operands are unequal
+              case 2:
+                currentI->setPredicate(FCmpInst::FCMP_UGT);
+                break; // unordered or greater than
+              case 3:
+                currentI->setPredicate(FCmpInst::FCMP_UGE);
+                break; // unordered, or greater than, or equal
+              case 4:
+                currentI->setPredicate(FCmpInst::FCMP_ULT);
+                break; // unordered or less than
+              case 5:
+                currentI->setPredicate(FCmpInst::FCMP_ULE);
+                break; // unordered, or less than, or equal
+              case 6:
+                currentI->setPredicate(FCmpInst::FCMP_OGT);
+                break; // ordered and greater than
+              case 7:
+                currentI->setPredicate(FCmpInst::FCMP_OGE);
+                break; // ordered and greater than or equal
+              case 8:
+                currentI->setPredicate(FCmpInst::FCMP_OLT);
+                break; // ordered and less than
+              case 9:
+                currentI->setPredicate(FCmpInst::FCMP_OLE);
+                break; // ordered or less than, or equal
+              }
               break;
             }
           }
         }
-        if (opcode == Instruction::ICmp) { // Condition (with int)
-          ICmpInst *currentI = (ICmpInst *)(&i);
-          switch (llvm::cryptoutils->get_range(3)) { // must be improved
-          case 0:                                    // do nothing
-            break;
-          case 1:
-            currentI->swapOperands();
-            break;
-          case 2: // randomly change the predicate
-            switch (llvm::cryptoutils->get_range(10)) {
-            case 0:
-              currentI->setPredicate(ICmpInst::ICMP_EQ);
-              break; // equal
-            case 1:
-              currentI->setPredicate(ICmpInst::ICMP_NE);
-              break; // not equal
-            case 2:
-              currentI->setPredicate(ICmpInst::ICMP_UGT);
-              break; // unsigned greater than
-            case 3:
-              currentI->setPredicate(ICmpInst::ICMP_UGE);
-              break; // unsigned greater or equal
-            case 4:
-              currentI->setPredicate(ICmpInst::ICMP_ULT);
-              break; // unsigned less than
-            case 5:
-              currentI->setPredicate(ICmpInst::ICMP_ULE);
-              break; // unsigned less or equal
-            case 6:
-              currentI->setPredicate(ICmpInst::ICMP_SGT);
-              break; // signed greater than
-            case 7:
-              currentI->setPredicate(ICmpInst::ICMP_SGE);
-              break; // signed greater or equal
-            case 8:
-              currentI->setPredicate(ICmpInst::ICMP_SLT);
-              break; // signed less than
-            case 9:
-              currentI->setPredicate(ICmpInst::ICMP_SLE);
-              break; // signed less or equal
-            }
-            break;
-          }
+      }
+      // Remove DIs from AlterBB
+      vector<CallInst *> toRemove;
+      vector<Constant *> DeadConstants;
+      for (Instruction &I : *alteredBB) {
+        if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+          if (CI->getCalledFunction() != nullptr &&
+              CI->getCalledFunction()->getName().startswith("llvm.dbg"))
+            toRemove.emplace_back(CI);
         }
-        if (opcode == Instruction::FCmp) { // Conditions (with float)
-          FCmpInst *currentI = (FCmpInst *)(&i);
-          switch (llvm::cryptoutils->get_range(3)) { // must be improved
-          case 0:                                    // do nothing
-            break;
-          case 1:
-            currentI->swapOperands();
-            break;
-          case 2: // randomly change the predicate
-            switch (llvm::cryptoutils->get_range(10)) {
-            case 0:
-              currentI->setPredicate(FCmpInst::FCMP_OEQ);
-              break; // ordered and equal
-            case 1:
-              currentI->setPredicate(FCmpInst::FCMP_ONE);
-              break; // ordered and operands are unequal
-            case 2:
-              currentI->setPredicate(FCmpInst::FCMP_UGT);
-              break; // unordered or greater than
-            case 3:
-              currentI->setPredicate(FCmpInst::FCMP_UGE);
-              break; // unordered, or greater than, or equal
-            case 4:
-              currentI->setPredicate(FCmpInst::FCMP_ULT);
-              break; // unordered or less than
-            case 5:
-              currentI->setPredicate(FCmpInst::FCMP_ULE);
-              break; // unordered, or less than, or equal
-            case 6:
-              currentI->setPredicate(FCmpInst::FCMP_OGT);
-              break; // ordered and greater than
-            case 7:
-              currentI->setPredicate(FCmpInst::FCMP_OGE);
-              break; // ordered and greater than or equal
-            case 8:
-              currentI->setPredicate(FCmpInst::FCMP_OLT);
-              break; // ordered and less than
-            case 9:
-              currentI->setPredicate(FCmpInst::FCMP_OLE);
-              break; // ordered or less than, or equal
-            }
-            break;
-          }
+      }
+      // Shamefully stolen from IPO/StripSymbols.cpp
+      for (CallInst *CI : toRemove) {
+        Value *Arg1 = CI->getArgOperand(0);
+        Value *Arg2 = CI->getArgOperand(1);
+        assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
+        CI->eraseFromParent();
+        if (Arg1->use_empty()) {
+          if (Constant *C = dyn_cast<Constant>(Arg1))
+            DeadConstants.emplace_back(C);
+          else
+            RecursivelyDeleteTriviallyDeadInstructions(Arg1);
+        }
+        if (Arg2->use_empty())
+          if (Constant *C = dyn_cast<Constant>(Arg2))
+            DeadConstants.emplace_back(C);
+      }
+      while (!DeadConstants.empty()) {
+        Constant *C = DeadConstants.back();
+        DeadConstants.pop_back();
+        if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
+          if (GV->hasLocalLinkage())
+            RemoveDeadConstant(GV);
+        } else {
+          RemoveDeadConstant(C);
         }
       }
     }
-    // Remove DIs from AlterBB
-    vector<CallInst *> toRemove;
-    vector<Constant *> DeadConstants;
-    for (Instruction &I : *alteredBB) {
-      if (CallInst *CI = dyn_cast<CallInst>(&I)) {
-        if (CI->getCalledFunction() != nullptr &&
-            CI->getCalledFunction()->getName().startswith("llvm.dbg"))
-          toRemove.emplace_back(CI);
-      }
-    }
-    // Shamefully stolen from IPO/StripSymbols.cpp
-    for (CallInst *CI : toRemove) {
-      Value *Arg1 = CI->getArgOperand(0);
-      Value *Arg2 = CI->getArgOperand(1);
-      assert(CI->use_empty() && "llvm.dbg intrinsic should have void result");
-      CI->eraseFromParent();
-      if (Arg1->use_empty()) {
-        if (Constant *C = dyn_cast<Constant>(Arg1))
-          DeadConstants.emplace_back(C);
-        else
-          RecursivelyDeleteTriviallyDeadInstructions(Arg1);
-      }
-      if (Arg2->use_empty())
-        if (Constant *C = dyn_cast<Constant>(Arg2))
-          DeadConstants.emplace_back(C);
-    }
-    while (!DeadConstants.empty()) {
-      Constant *C = DeadConstants.back();
-      DeadConstants.pop_back();
-      if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
-        if (GV->hasLocalLinkage())
-          RemoveDeadConstant(GV);
-      } else {
-        RemoveDeadConstant(C);
-      }
-    }
-    if (JunkAssembly) {
+    if (JunkAssembly || OnlyJunkAssembly) {
       string junk = "";
       for (uint32_t i = cryptoutils->get_range(MinNumberOfJunkAssembly,
                                                MaxNumberOfJunkAssembly);
@@ -656,6 +661,7 @@ struct BogusControlFlow : public FunctionPass {
             BasicBlock::Create(opFunction->getContext(), "", opFunction);
         // Insert a br to make it can be obfuscated by IndirectBranch
         BranchInst::Create(opEntryBlock, opTrampBlock);
+        writeAnnotation(opFunction, "bcfopfunc");
         IRBOp = new IRBuilder<>(opEntryBlock);
       }
       Instruction *tmp = &*(i->getParent()->getFirstNonPHIOrDbgOrLifetime());

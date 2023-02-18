@@ -9,8 +9,9 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/NoFolder.h"
 #include "llvm/Support/raw_ostream.h"
+
 using namespace llvm;
-using namespace std;
+
 // Shamefully borrowed from ../Scalar/RegToMem.cpp and .../IR/Instruction.cpp :(
 bool valueEscapes(Instruction *Inst) {
   // https://reviews.llvm.org/D137700
@@ -38,43 +39,7 @@ bool hasApplePtrauth(Module *M) {
       return true;
   return false;
 }
-#if 0
-void appendToAnnotations(Module &M, ConstantStruct *Data) {
-  // Type for the annotation array
-  // { i8*, i8*, i8*, i32 }
-  GlobalVariable *AnnotationGV = M.getGlobalVariable("llvm.global.annotations");
-  Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
-  Type *Int32Ty = Type::getInt32Ty(M.getContext());
-  if (AnnotationGV == nullptr) {
-    ArrayType *AT = ArrayType::get(Data->getType(), 1);
-    ConstantArray *CA = cast<ConstantArray>(ConstantArray::get(AT, {Data}));
-    GlobalVariable *newGV = new GlobalVariable(M, CA->getType(), false,
-                                               GlobalValue::AppendingLinkage,
-                                               CA, "llvm.global.annotations");
-    newGV->setSection("llvm.metadata");
-    return;
-  } else {
-    StructType *ST = StructType::get(
-        M.getContext(), {Int8PtrTy, Int8PtrTy, Int8PtrTy, Int32Ty});
-    vector<Constant *> exists;
-    for (unsigned i = 0;
-         i < cast<ArrayType>(AnnotationGV->getInitializer()->getType())
-                 ->getNumElements();
-         i++) {
-      exists.emplace_back(AnnotationGV->getInitializer()->getAggregateElement(i));
-    }
-    exists.emplace_back(Data);
-    ArrayType *AT = ArrayType::get(ST, exists.size());
-    ConstantArray *CA = cast<ConstantArray>(
-        ConstantArray::get(AT, ArrayRef<Constant *>(exists)));
-    GlobalVariable *newGV = new GlobalVariable(M, CA->getType(), false,
-                                               GlobalValue::AppendingLinkage,
-                                               CA, "llvm.global.annotations");
-    newGV->setSection("llvm.metadata");
-    return;
-  }
-}
-#endif
+
 void FixFunctionConstantExpr(Function *Func) {
   // Replace ConstantExpr with equal instructions
   // Otherwise replacing on Constant will crash the compiler
@@ -172,6 +137,41 @@ void fixStack(Function *f) {
   } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 
+static GlobalVariable *createAnnoStringGV(Module *M, StringRef Str) {
+  Constant *s = ConstantDataArray::getString(M->getContext(), Str);
+  GlobalVariable *GV = new GlobalVariable(
+      *M, s->getType(), true, llvm::GlobalValue::PrivateLinkage, s, ".str");
+  GV->setSection("llvm.metadata");
+  GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  return GV;
+}
+
+static Constant *createNewCSForAnnotationWithAppendedStr(
+    Function *f, std::vector<Constant *> &Annotations, std::string str) {
+  PointerType *GlobalsInt8PtrTy =
+      Type::getInt8Ty(f->getParent()->getContext())
+          ->getPointerTo(
+              f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace());
+  Constant *GVInGlobalsAS = f;
+  if (f->getAddressSpace() !=
+      f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace())
+    GVInGlobalsAS = llvm::ConstantExpr::getAddrSpaceCast(
+        f,
+        f->getValueType()->getPointerTo(
+            f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace()));
+  Constant *Fields[] = {
+      ConstantExpr::getBitCast(GVInGlobalsAS, GlobalsInt8PtrTy),
+      ConstantExpr::getBitCast(createAnnoStringGV(f->getParent(), str),
+                               GlobalsInt8PtrTy),
+      ConstantExpr::getBitCast(
+          createAnnoStringGV(f->getParent(),
+                             f->getParent()->getSourceFileName()),
+          GlobalsInt8PtrTy),
+      ConstantInt::get(Type::getInt32Ty(f->getParent()->getContext()), 0),
+      ConstantPointerNull::get(GlobalsInt8PtrTy)};
+  return ConstantStruct::getAnon(Fields);
+}
+
 std::string readAnnotate(Function *f) {
   std::string annotation = "";
 
@@ -179,47 +179,115 @@ std::string readAnnotate(Function *f) {
   GlobalVariable *glob =
       f->getParent()->getGlobalVariable("llvm.global.annotations");
 
-  if (glob) {
-    // Get the array
+  if (glob)
     if (ConstantArray *ca = dyn_cast<ConstantArray>(glob->getInitializer())) {
-      for (unsigned i = 0; i < ca->getNumOperands(); ++i) {
-        // Get the struct
+      for (unsigned i = 0; i < ca->getNumOperands(); ++i)
         if (ConstantStruct *structAn =
                 dyn_cast<ConstantStruct>(ca->getOperand(i))) {
           if (ConstantExpr *expr =
                   dyn_cast<ConstantExpr>(structAn->getOperand(0))) {
-            // If it's a bitcast we can check if the annotation is concerning
-            // the current function
             if (expr->getOpcode() == Instruction::BitCast &&
                 expr->getOperand(0) == f) {
               ConstantExpr *note = cast<ConstantExpr>(structAn->getOperand(1));
               // If it's a GetElementPtr, that means we found the variable
               // containing the annotations
-              if (note->getOpcode() == Instruction::GetElementPtr) {
+              if (note->getOpcode() == Instruction::GetElementPtr)
                 if (GlobalVariable *annoteStr =
-                        dyn_cast<GlobalVariable>(note->getOperand(0))) {
+                        dyn_cast<GlobalVariable>(note->getOperand(0)))
                   if (ConstantDataSequential *data =
                           dyn_cast<ConstantDataSequential>(
-                              annoteStr->getInitializer())) {
-                    if (data->isString()) {
+                              annoteStr->getInitializer()))
+                    if (data->isString())
                       annotation += data->getAsString().lower() + " ";
-                    }
-                  }
-                }
-              }
             }
+          } else if (structAn->getOperand(0) == f) { // opaque pointer
+            Constant *note = structAn->getOperand(1);
+            if (GlobalVariable *annoteStr =
+                    dyn_cast<GlobalVariable>(note->getOperand(0)))
+              if (ConstantDataSequential *data =
+                      dyn_cast<ConstantDataSequential>(
+                          annoteStr->getInitializer()))
+                if (data->isString())
+                  annotation += data->getAsString().lower() + " ";
           }
         }
-      }
     }
-  }
   return annotation;
 }
 
-// Unlike O-LLVM which uses __attribute__ that is not supported by the ObjC CFE.
-// We use a dummy call here and remove the call later
-// Very dumb and definitely slower than the function attribute method
-// Merely a hack
+void writeAnnotation(Function *f, std::string annotation) {
+  Module *M = f->getParent();
+  GlobalVariable *glob = M->getGlobalVariable("llvm.global.annotations");
+  if (glob) {
+    if (ConstantArray *ca = dyn_cast<ConstantArray>(glob->getInitializer())) {
+      bool fHasAnnotation = false;
+      for (unsigned i = 0; i < ca->getNumOperands(); ++i)
+        if (ConstantStruct *structAn =
+                dyn_cast<ConstantStruct>(ca->getOperand(i))) {
+          if (ConstantExpr *expr =
+                  dyn_cast<ConstantExpr>(structAn->getOperand(0))) {
+            if (expr->getOpcode() == Instruction::BitCast &&
+                expr->getOperand(0) == f) {
+              fHasAnnotation = true;
+              ConstantExpr *note = cast<ConstantExpr>(structAn->getOperand(1));
+              // If it's a GetElementPtr, that means we found the variable
+              // containing the annotations
+              if (note->getOpcode() == Instruction::GetElementPtr)
+                if (GlobalVariable *annoteStr =
+                        dyn_cast<GlobalVariable>(note->getOperand(0)))
+                  if (ConstantDataSequential *data =
+                          dyn_cast<ConstantDataSequential>(
+                              annoteStr->getInitializer()))
+                    if (data->isString())
+                      annoteStr->setInitializer(ConstantDataArray::getString(
+                          M->getContext(),
+                          data->getAsString().str() + " " + annotation));
+            }
+          } else if (structAn->getOperand(0) == f) { // opaque pointer
+            Constant *note = structAn->getOperand(1);
+            if (GlobalVariable *annoteStr =
+                    dyn_cast<GlobalVariable>(note->getOperand(0)))
+              if (ConstantDataSequential *data =
+                      dyn_cast<ConstantDataSequential>(
+                          annoteStr->getInitializer()))
+                if (data->isString())
+                  annoteStr->setInitializer(ConstantDataArray::getString(
+                      M->getContext(),
+                      data->getAsString().str() + " " + annotation));
+          }
+        }
+      if (!fHasAnnotation) {
+        std::vector<Constant *> Annotations;
+        for (unsigned int i = 0; i < ca->getNumOperands(); i++)
+          Annotations.emplace_back(ca->getOperand(i));
+        Annotations.emplace_back(createNewCSForAnnotationWithAppendedStr(
+            f, Annotations, annotation));
+        Constant *newCA = ConstantArray::get(
+            ArrayType::get(Annotations[0]->getType(), Annotations.size()),
+            Annotations);
+        glob->setInitializer(newCA);
+      }
+    }
+  } else {
+    Type *Int32Ty = Type::getInt32Ty(M->getContext());
+    Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
+    StructType *ST = StructType::get(
+        M->getContext(), {Int8PtrTy, Int8PtrTy, Int8PtrTy, Int32Ty, Int8PtrTy});
+    ArrayType *AT = ArrayType::get(ST, 1);
+    std::vector<Constant *> Annotations = {};
+    ConstantArray *CA = cast<ConstantArray>(ConstantArray::get(
+        AT,
+        {createNewCSForAnnotationWithAppendedStr(f, Annotations, annotation)}));
+    GlobalVariable *newGV = new GlobalVariable(*M, CA->getType(), false,
+                                               GlobalValue::AppendingLinkage,
+                                               CA, "llvm.global.annotations");
+    newGV->setSection("llvm.metadata");
+  }
+}
+
+// Unlike O-LLVM which uses __attribute__ that is not supported by the ObjC
+// CFE. We use a dummy call here and remove the call later Very dumb and
+// definitely slower than the function attribute method Merely a hack
 bool readFlag(Function *f, std::string attribute) {
   for (Instruction &I : instructions(f)) {
     Instruction *Inst = &I;
@@ -234,7 +302,6 @@ bool readFlag(Function *f, std::string attribute) {
   return false;
 }
 bool toObfuscate(bool flag, Function *f, std::string attribute) {
-
   // Check if declaration and external linkage
   if (f->isDeclaration() || f->hasAvailableExternallyLinkage()) {
     return false;

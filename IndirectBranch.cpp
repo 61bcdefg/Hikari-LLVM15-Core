@@ -91,7 +91,7 @@ struct IndirectBranch : public FunctionPass {
         FunctionType::get(Type::getInt8PtrTy(M.getContext()),
                           {Type::getInt8PtrTy(M.getContext())}, false),
         GlobalValue::LinkageTypes::PrivateLinkage,
-        "IndirechBranchTargetWrapper", M);
+        "HikariIndirectBranchTargetWrapper", M);
     BasicBlock *BB = BasicBlock::Create(valwrap->getContext(), "", valwrap);
     ReturnInst::Create(valwrap->getContext(), valwrap->getArg(0), BB);
     appendToCompilerUsed(M, {valwrap});
