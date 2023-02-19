@@ -110,8 +110,12 @@ struct IndirectBranch : public FunctionPass {
       if (BranchInst *BI = dyn_cast<BranchInst>(&Inst))
         BIs.emplace_back(BI);
 
-    Value *zero =
-        ConstantInt::get(Type::getInt32Ty(Func.getParent()->getContext()), 0);
+    Type *Int8Ty = Type::getInt8Ty(Func.getParent()->getContext());
+    Type *Int32Ty = Type::getInt32Ty(Func.getParent()->getContext());
+    Type *Int8PtrTy = Type::getInt8PtrTy(Func.getParent()->getContext());
+
+    Value *zero = ConstantInt::get(Int32Ty, 0);
+
     for (BranchInst *BI : BIs) {
       IRBuilder<NoFolder> IRB(BI);
       vector<BasicBlock *> BBs;
@@ -126,19 +130,16 @@ struct IndirectBranch : public FunctionPass {
       GlobalVariable *LoadFrom = nullptr;
       if (BI->isConditional() ||
           indexmap.find(BI->getSuccessor(0)) == indexmap.end()) {
-        ArrayType *AT = ArrayType::get(
-            Type::getInt8PtrTy(Func.getParent()->getContext()), BBs.size());
+        ArrayType *AT = ArrayType::get(Int8PtrTy, BBs.size());
         vector<Constant *> BlockAddresses;
         for (BasicBlock *BB : BBs)
           BlockAddresses.emplace_back(
-              EncryptJumpTarget
-                  ? ConstantExpr::getGetElementPtr(
-                        Type::getInt8Ty(Func.getParent()->getContext()),
-                        ConstantExpr::getBitCast(
-                            BlockAddress::get(BB),
-                            Type::getInt8PtrTy(Func.getParent()->getContext())),
-                        encmap[&Func])
-                  : BlockAddress::get(BB));
+              EncryptJumpTarget ? ConstantExpr::getGetElementPtr(
+                                      Int8Ty,
+                                      ConstantExpr::getBitCast(
+                                          BlockAddress::get(BB), Int8PtrTy),
+                                      encmap[&Func])
+                                : BlockAddress::get(BB));
         // Create a new GV
         Constant *BlockAddressArray =
             ConstantArray::get(AT, ArrayRef<Constant *>(BlockAddresses));
@@ -154,32 +155,25 @@ struct IndirectBranch : public FunctionPass {
       Value *index, *RealIndex = nullptr;
       if (BI->isConditional()) {
         Value *condition = BI->getCondition();
-        index = IRB.CreateZExt(
-            condition, Type::getInt32Ty(Func.getParent()->getContext()));
+        index = IRB.CreateZExt(condition, Int32Ty);
         RealIndex = index;
       } else {
         Value *indexval = nullptr;
         ConstantInt *IndexEncKey =
-            EncryptJumpTarget
-                ? ConstantInt::get(
-                      Type::getInt32Ty(Func.getParent()->getContext()),
-                      cryptoutils->get_uint32_t())
-                : nullptr;
+            EncryptJumpTarget ? cast<ConstantInt>(ConstantInt::get(
+                                    Int32Ty, cryptoutils->get_uint32_t()))
+                              : nullptr;
         if (EncryptJumpTarget) {
           GlobalVariable *indexgv = new GlobalVariable(
-              *Func.getParent(),
-              Type::getInt32Ty(Func.getParent()->getContext()), false,
+              *Func.getParent(), Int32Ty, false,
               GlobalValue::LinkageTypes::PrivateLinkage,
-              ConstantInt::get(Type::getInt32Ty(Func.getParent()->getContext()),
-                               IndexEncKey->getValue() ^
-                                   indexmap[BI->getSuccessor(0)]),
+              ConstantInt::get(Int32Ty, IndexEncKey->getValue() ^
+                                            indexmap[BI->getSuccessor(0)]),
               "IndirectBranchingIndex");
           appendToCompilerUsed(*Func.getParent(), {indexgv});
           indexval = IRB.CreateLoad(indexgv->getValueType(), indexgv);
         } else {
-          indexval =
-              ConstantInt::get(Type::getInt32Ty(Func.getParent()->getContext()),
-                               indexmap[BI->getSuccessor(0)]);
+          indexval = ConstantInt::get(Int32Ty, indexmap[BI->getSuccessor(0)]);
         }
         if (UseStack) {
           AllocaInst *AI = IRB.CreateAlloca(indexval->getType());
@@ -204,34 +198,33 @@ struct IndirectBranch : public FunctionPass {
         AllocaInst *AI3 = IRB.CreateAlloca(GEPLI->getType());
         IRB.CreateStore(GEPLI, AI3);
         if (!EncryptJumpTarget)
-          LI = IRB.CreateLoad(AI3->getAllocatedType(), AI3,
+          LI = IRB.CreateLoad(Int8PtrTy,
+                              IRB.CreateLoad(AI3->getAllocatedType(), AI3),
                               "IndirectBranchingTargetAddress");
         else
-          gepptr = IRB.CreateLoad(Type::getInt8PtrTy(Func.getContext()),
+          gepptr = IRB.CreateLoad(Int8PtrTy,
                                   IRB.CreateLoad(AI3->getAllocatedType(), AI3));
       } else {
         Value *GEP = IRB.CreateGEP(LoadFrom->getValueType(), LoadFrom,
                                    {zero, RealIndex});
         if (!EncryptJumpTarget)
-          LI = IRB.CreateLoad(GEP->getType(), GEP,
-                              "IndirectBranchingTargetAddress");
+          LI = IRB.CreateLoad(Int8PtrTy, GEP, "IndirectBranchingTargetAddress");
         else
-          gepptr = IRB.CreateLoad(Type::getInt8PtrTy(Func.getContext()), GEP);
+          gepptr = IRB.CreateLoad(Int8PtrTy, GEP);
       }
       if (EncryptJumpTarget) {
-        ConstantInt *encenckey = ConstantInt::get(
-            Type::getInt32Ty(Func.getContext()), cryptoutils->get_uint32_t());
+        ConstantInt *encenckey = cast<ConstantInt>(
+            ConstantInt::get(Int32Ty, cryptoutils->get_uint32_t()));
         GlobalVariable *enckeyGV = new GlobalVariable(
-            *Func.getParent(), Type::getInt32Ty(Func.getParent()->getContext()),
-            false, GlobalValue::LinkageTypes::PrivateLinkage,
-            ConstantInt::get(Type::getInt32Ty(Func.getContext()),
+            *Func.getParent(), Int32Ty, false,
+            GlobalValue::LinkageTypes::PrivateLinkage,
+            ConstantInt::get(Int32Ty,
                              encenckey->getValue() ^ encmap[&Func]->getValue()),
             "IndirectBranchingAddressEncryptKey");
         appendToCompilerUsed(*Func.getParent(), enckeyGV);
         enckeyLoad = IRB.CreateXor(
             IRB.CreateLoad(enckeyGV->getValueType(), enckeyGV), encenckey);
-        LI = IRB.CreateGEP(Type::getInt8Ty(Func.getContext()), gepptr,
-                           IRB.CreateSub(zero, enckeyLoad),
+        LI = IRB.CreateGEP(Int8Ty, gepptr, IRB.CreateSub(zero, enckeyLoad),
                            "IndirectBranchingTargetAddress");
         SubstituteImpl::substituteXor(dyn_cast<BinaryOperator>(enckeyLoad));
       }
