@@ -3,6 +3,9 @@
 #include "llvm/Transforms/Obfuscation/SubstituteImpl.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/NoFolder.h"
+#include "llvm/Transforms/Obfuscation/CryptoUtils.h"
+
+using namespace llvm;
 
 #define NUMBER_ADD_SUBST 7
 #define NUMBER_SUB_SUBST 6
@@ -69,22 +72,22 @@ static void (*funcMul[NUMBER_MUL_SUBST])(BinaryOperator *bo) = {
     &mulSubstitution, &mulSubstitution2};
 
 void SubstituteImpl::substituteAdd(BinaryOperator *bo) {
-  (*funcAdd[llvm::cryptoutils->get_range(NUMBER_ADD_SUBST)])(bo);
+  (*funcAdd[cryptoutils->get_range(NUMBER_ADD_SUBST)])(bo);
 }
 void SubstituteImpl::substituteSub(BinaryOperator *bo) {
-  (*funcSub[llvm::cryptoutils->get_range(NUMBER_SUB_SUBST)])(bo);
+  (*funcSub[cryptoutils->get_range(NUMBER_SUB_SUBST)])(bo);
 }
 void SubstituteImpl::substituteAnd(BinaryOperator *bo) {
-  (*funcAnd[llvm::cryptoutils->get_range(NUMBER_AND_SUBST)])(bo);
+  (*funcAnd[cryptoutils->get_range(NUMBER_AND_SUBST)])(bo);
 }
 void SubstituteImpl::substituteOr(BinaryOperator *bo) {
-  (*funcOr[llvm::cryptoutils->get_range(NUMBER_OR_SUBST)])(bo);
+  (*funcOr[cryptoutils->get_range(NUMBER_OR_SUBST)])(bo);
 }
 void SubstituteImpl::substituteXor(BinaryOperator *bo) {
-  (*funcXor[llvm::cryptoutils->get_range(NUMBER_XOR_SUBST)])(bo);
+  (*funcXor[cryptoutils->get_range(NUMBER_XOR_SUBST)])(bo);
 }
 void SubstituteImpl::substituteMul(BinaryOperator *bo) {
-  (*funcMul[llvm::cryptoutils->get_range(NUMBER_MUL_SUBST)])(bo);
+  (*funcMul[cryptoutils->get_range(NUMBER_MUL_SUBST)])(bo);
 }
 
 // Implementation of ~(a | b) and ~a & ~b
@@ -153,7 +156,7 @@ static void addDoubleNeg(BinaryOperator *bo) {
 // Implementation of  r = rand (); a = b + r; a = a + c; a = a - r
 static void addRand(BinaryOperator *bo) {
   ConstantInt *co = (ConstantInt *)ConstantInt::get(
-      bo->getType(), llvm::cryptoutils->get_uint64_t());
+      bo->getType(), cryptoutils->get_uint64_t());
   BinaryOperator *op =
       BinaryOperator::Create(Instruction::Add, bo->getOperand(0), co, "", bo);
   op = BinaryOperator::Create(Instruction::Add, op, bo->getOperand(1), "", bo);
@@ -164,7 +167,7 @@ static void addRand(BinaryOperator *bo) {
 // Implementation of r = rand (); a = b - r; a = a + b; a = a + r
 static void addRand2(BinaryOperator *bo) {
   ConstantInt *co = (ConstantInt *)ConstantInt::get(
-      bo->getType(), llvm::cryptoutils->get_uint64_t());
+      bo->getType(), cryptoutils->get_uint64_t());
   BinaryOperator *op =
       BinaryOperator::Create(Instruction::Sub, bo->getOperand(0), co, "", bo);
   op = BinaryOperator::Create(Instruction::Add, op, bo->getOperand(1), "", bo);
@@ -214,7 +217,7 @@ static void subNeg(BinaryOperator *bo) {
 // Implementation of  r = rand (); a = b + r; a = a - c; a = a - r
 static void subRand(BinaryOperator *bo) {
   ConstantInt *co = (ConstantInt *)ConstantInt::get(
-      bo->getType(), llvm::cryptoutils->get_uint64_t());
+      bo->getType(), cryptoutils->get_uint64_t());
   BinaryOperator *op =
       BinaryOperator::Create(Instruction::Add, bo->getOperand(0), co, "", bo);
   op = BinaryOperator::Create(Instruction::Sub, op, bo->getOperand(1), "", bo);
@@ -225,7 +228,7 @@ static void subRand(BinaryOperator *bo) {
 // Implementation of  r = rand (); a = b - r; a = a - c; a = a + r
 static void subRand2(BinaryOperator *bo) {
   ConstantInt *co = (ConstantInt *)ConstantInt::get(
-      bo->getType(), llvm::cryptoutils->get_uint64_t());
+      bo->getType(), cryptoutils->get_uint64_t());
   BinaryOperator *op =
       BinaryOperator::Create(Instruction::Sub, bo->getOperand(0), co, "", bo);
   op = BinaryOperator::Create(Instruction::Sub, op, bo->getOperand(1), "", bo);
@@ -301,7 +304,7 @@ static void andSubstitution3(BinaryOperator *bo) {
 // Implementation of a = a & b <=> ~(~a | ~b) & (r | ~r)
 static void andSubstitutionRand(BinaryOperator *bo) {
   ConstantInt *co = (ConstantInt *)ConstantInt::get(
-      bo->getType(), llvm::cryptoutils->get_uint64_t());
+      bo->getType(), cryptoutils->get_uint64_t());
   BinaryOperator *op = BinaryOperator::CreateNot(bo->getOperand(0), "", bo);
   BinaryOperator *op1 = BinaryOperator::CreateNot(bo->getOperand(1), "", bo);
   BinaryOperator *opr = BinaryOperator::CreateNot(co, "", bo);
@@ -366,7 +369,7 @@ static void orSubstitution3(BinaryOperator *bo) {
 // ~r))) | (~(~a | ~b) & (r | ~r))
 static void orSubstitutionRand(BinaryOperator *bo) {
   ConstantInt *co = (ConstantInt *)ConstantInt::get(
-      bo->getType(), llvm::cryptoutils->get_uint64_t());
+      bo->getType(), cryptoutils->get_uint64_t());
   BinaryOperator *op = BinaryOperator::CreateNot(bo->getOperand(0), "", bo);
   BinaryOperator *op1 = BinaryOperator::CreateNot(bo->getOperand(1), "", bo);
   BinaryOperator *op2 = BinaryOperator::CreateNot(co, "", bo);
@@ -448,7 +451,7 @@ static void xorSubstitution3(BinaryOperator *bo) {
 // & r | b & ~r) note : r is a random number
 static void xorSubstitutionRand(BinaryOperator *bo) {
   ConstantInt *co = (ConstantInt *)ConstantInt::get(
-      bo->getType(), llvm::cryptoutils->get_uint64_t());
+      bo->getType(), cryptoutils->get_uint64_t());
   BinaryOperator *op = BinaryOperator::CreateNot(bo->getOperand(0), "", bo);
   op = BinaryOperator::Create(Instruction::And, co, op, "", bo);
   BinaryOperator *opr = BinaryOperator::CreateNot(co, "", bo);

@@ -9,17 +9,13 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
-#include "llvm/Pass.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/CallSite.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include <cstdlib>
-#include <fstream>
-#include <iostream>
-#include <string>
+
 using namespace llvm;
-using namespace std;
+
 static cl::opt<int>
     ProbRate("fw_prob",
              cl::desc("Choose the probability [%] For Each CallSite To Be "
@@ -30,6 +26,7 @@ static cl::opt<int> ObfTimes(
     cl::desc(
         "Choose how many time the FunctionWrapper pass loop on a CallSite"),
     cl::value_desc("Number of Times"), cl::init(2), cl::Optional);
+
 namespace llvm {
 struct FunctionWrapper : public ModulePass {
   static char ID;
@@ -43,13 +40,13 @@ struct FunctionWrapper : public ModulePass {
                 "-fw_prob=x must be 0 < x <= 100";
       return false;
     }
-    vector<CallSite *> callsites;
+    std::vector<CallSite *> callsites;
     for (Function &F : M) {
       if (toObfuscate(flag, &F, "fw")) {
         errs() << "Running FunctionWrapper On " << F.getName() << "\n";
         for (Instruction &Inst : instructions(F))
           if ((isa<CallInst>(&Inst) || isa<InvokeInst>(&Inst)))
-            if ((int)llvm::cryptoutils->get_range(100) <= ProbRate)
+            if ((int)cryptoutils->get_range(100) <= ProbRate)
               callsites.emplace_back(new CallSite(&Inst));
       }
     }
@@ -72,7 +69,7 @@ struct FunctionWrapper : public ModulePass {
          !isa<Function>(calledFunction)) ||
         CS->getIntrinsicID() != Intrinsic::not_intrinsic)
       return nullptr;
-    vector<unsigned int> byvalArgNums = {};
+    std::vector<unsigned int> byvalArgNums;
     if (Function *tmp = dyn_cast<Function>(calledFunction)) {
       if (tmp->getName().startswith("clang.")) {
         // Clang Intrinsic
@@ -87,7 +84,7 @@ struct FunctionWrapper : public ModulePass {
       }
     }
     // Create a new function which in turn calls the actual function
-    vector<Type *> types;
+    std::vector<Type *> types;
     for (unsigned int i = 0; i < CS->getNumArgOperands(); i++)
       types.emplace_back(CS->getArgOperand(i)->getType());
     FunctionType *ft =
@@ -100,7 +97,7 @@ struct FunctionWrapper : public ModulePass {
     // exist in all objects
     appendToCompilerUsed(*func->getParent(), {func});
     BasicBlock *BB = BasicBlock::Create(func->getContext(), "", func);
-    vector<Value *> params;
+    std::vector<Value *> params;
     if (byvalArgNums.empty())
       for (Argument &arg : func->args())
         params.emplace_back(&arg);

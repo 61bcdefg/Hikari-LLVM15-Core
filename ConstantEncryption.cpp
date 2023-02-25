@@ -15,25 +15,20 @@
     You should have received a copy of the GNU Affero General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+#include "llvm/Transforms/Obfuscation/ConstantEncryption.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
-#if LLVM_VERSION_MAJOR >= 15
-#include "llvm/IR/IntrinsicInst.h"
-#endif
-#include "llvm/Pass.h"
-#include "llvm/Transforms/Obfuscation/Obfuscation.h"
+#include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/SubstituteImpl.h"
-#include "llvm/Transforms/Obfuscation/compat/CallSite.h"
-#include <cstdlib>
-#include <fstream>
-#include <iostream>
-#include <string>
+#include "llvm/Transforms/Obfuscation/Utils.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
+
 using namespace llvm;
-using namespace std;
+
 static cl::opt<bool>
     SubstituteXor("constenc_subxor",
                   cl::desc("Substitute xor operator of ConstantEncryption"),
@@ -54,6 +49,7 @@ static cl::opt<int> ObfTimes(
     cl::desc(
         "Choose how many time the ConstantEncryption pass loop on a function"),
     cl::value_desc("Number of Times"), cl::init(1), cl::Optional);
+
 namespace llvm {
 struct ConstantEncryption : public ModulePass {
   static char ID;
@@ -122,7 +118,7 @@ struct ConstantEncryption : public ModulePass {
   void HandleConstantIntInitializerGV(GlobalVariable *GVPtr) {
     // Prepare Types and Keys
     ConstantInt *CI = dyn_cast<ConstantInt>(GVPtr->getInitializer());
-    pair<ConstantInt * /*key*/, ConstantInt * /*new*/> keyandnew =
+    std::pair<ConstantInt * /*key*/, ConstantInt * /*new*/> keyandnew =
         PairConstantInt(CI);
     ConstantInt *XORKey = keyandnew.first;
     ConstantInt *newGVInit = keyandnew.second;
@@ -148,7 +144,7 @@ struct ConstantEncryption : public ModulePass {
   }
 
   void HandleConstantIntOperand(Instruction *I, unsigned opindex) {
-    pair<ConstantInt * /*key*/, ConstantInt * /*new*/> keyandnew =
+    std::pair<ConstantInt * /*key*/, ConstantInt * /*new*/> keyandnew =
         PairConstantInt(cast<ConstantInt>(I->getOperand(opindex)));
     ConstantInt *Key = keyandnew.first;
     ConstantInt *New = keyandnew.second;
@@ -161,7 +157,7 @@ struct ConstantEncryption : public ModulePass {
       SubstituteImpl::substituteXor(NewOperand);
   }
 
-  pair<ConstantInt * /*key*/, ConstantInt * /*new*/>
+  std::pair<ConstantInt * /*key*/, ConstantInt * /*new*/>
   PairConstantInt(ConstantInt *C) {
     IntegerType *IT = cast<IntegerType>(C->getType());
     uint64_t K;
@@ -174,10 +170,10 @@ struct ConstantEncryption : public ModulePass {
     else if (IT->getBitWidth() == 64)
       K = cryptoutils->get_uint64_t();
     else
-      return make_pair(nullptr, nullptr);
+      return std::make_pair(nullptr, nullptr);
     ConstantInt *CI =
         cast<ConstantInt>(ConstantInt::get(IT, K ^ C->getValue()));
-    return make_pair(ConstantInt::get(IT, K), CI);
+    return std::make_pair(ConstantInt::get(IT, K), CI);
   }
 };
 

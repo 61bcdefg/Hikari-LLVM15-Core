@@ -12,6 +12,7 @@
   This pass only provides thin mode
 */
 
+#include "llvm/Transforms/Obfuscation/AntiClassDump.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
@@ -19,19 +20,14 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
-#include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Obfuscation/Obfuscation.h"
+#include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include <algorithm>
-#include <cassert>
-#include <cstdlib>
 #include <deque>
-#include <iostream>
-#include <string>
+
 using namespace llvm;
-using namespace std;
+
 static cl::opt<bool>
     UseInitialize("acd-use-initialize", cl::init(true), cl::NotHidden,
                   cl::desc("[AntiClassDump]Inject codes to +initialize"));
@@ -98,11 +94,11 @@ struct AntiClassDump : public ModulePass {
     assert(OBJC_LABEL_CLASS_CDS &&
            "OBJC_LABEL_CLASS_$ Not ConstantArray.Is the target using "
            "unsupported legacy runtime?");
-    vector<string> readyclses; // This is for storing classes that can be used
-                               // in handleClass()
-    deque<string> tmpclses;    // This is temporary storage for classes
-    map<string /*class*/, string /*super class*/> dependency;
-    map<string /*Class*/, GlobalVariable *>
+    std::vector<std::string> readyclses; // This is for storing classes that can
+                                         // be used in handleClass()
+    std::deque<std::string> tmpclses; // This is temporary storage for classes
+    std::map<std::string /*class*/, std::string /*super class*/> dependency;
+    std::map<std::string /*Class*/, GlobalVariable *>
         GVMapping; // Map ClassName to corresponding GV
     for (unsigned int i = 0; i < OBJC_LABEL_CLASS_CDS->getNumOperands(); i++) {
       ConstantExpr *clsEXPR =
@@ -120,8 +116,8 @@ struct AntiClassDump : public ModulePass {
       */
       GlobalVariable *SuperClassGV =
           dyn_cast_or_null<GlobalVariable>(clsCS->getOperand(1));
-      string supclsName = "";
-      string clsName = CEGV->getName().str();
+      std::string supclsName = "";
+      std::string clsName = CEGV->getName().str();
       clsName.replace(clsName.find("OBJC_CLASS_$_"), strlen("OBJC_CLASS_$_"),
                       "");
 
@@ -141,10 +137,10 @@ struct AntiClassDump : public ModulePass {
       }
     }
     // Sort Initialize Sequence Based On Dependency
-    while (tmpclses.size() > 0) {
-      string clstmp = tmpclses.front();
+    while (tmpclses.size()) {
+      std::string clstmp = tmpclses.front();
       tmpclses.pop_front();
-      string SuperClassName = dependency[clstmp];
+      std::string SuperClassName = dependency[clstmp];
       if (SuperClassName != "" &&
           std::find(readyclses.begin(), readyclses.end(), SuperClassName) ==
               readyclses.end()) {
@@ -158,15 +154,15 @@ struct AntiClassDump : public ModulePass {
     }
 
     // Now run handleClass for each class
-    for (string className : readyclses) {
+    for (std::string className : readyclses) {
       handleClass(GVMapping[className], &M);
     }
     return true;
   } // runOnModule
-  map<string, Value *>
+  std::map<std::string, Value *>
   splitclass_ro_t(ConstantStruct *class_ro,
                   Module *M) { // Split a class_ro_t structure
-    map<string, Value *> info;
+    std::map<std::string, Value *> info;
     StructType *objc_method_list_t_type =
         StructType::getTypeByName(M->getContext(), "struct.__method_list_t");
     for (unsigned i = 0; i < class_ro->getType()->getNumElements(); i++) {
@@ -296,7 +292,7 @@ struct AntiClassDump : public ModulePass {
             : metaclassGV->getInitializer()->getOperand(
                   metaclassGV->getInitializer()->getNumOperands() - 1));
     // Begin IRBuilder Initializing
-    map<string, Value *> Info = splitclass_ro_t(
+    std::map<std::string, Value *> Info = splitclass_ro_t(
         cast<ConstantStruct>(metaclass_ro->getInitializer()), M);
     BasicBlock *EntryBB = nullptr;
     if (Info.find("METHODLIST") != Info.end()) {
@@ -388,8 +384,8 @@ struct AntiClassDump : public ModulePass {
                                  0)); // is striped MethodListGV
       StructType *oldGVType =
           cast<StructType>(methodListGV->getInitializer()->getType());
-      vector<Type *> newStructType;
-      vector<Constant *> newStructValue;
+      std::vector<Type *> newStructType;
+      std::vector<Constant *> newStructValue;
       // I'm fully aware that it's consistent Int32 on all platforms
       // This is future-proof
       newStructType.emplace_back(oldGVType->getElementType(0));
@@ -467,7 +463,7 @@ struct AntiClassDump : public ModulePass {
     Constant *BitCastedIMP = cast<Constant>(
         IRB->CreateBitCast(IRB->GetInsertBlock()->getParent(),
                            objc_getClass->getFunctionType()->getParamType(0)));
-    vector<Constant *> methodStructContents; //{GEP(NAME),GEP(TYPE),IMP}
+    std::vector<Constant *> methodStructContents; //{GEP(NAME),GEP(TYPE),IMP}
     methodStructContents.emplace_back(MethName);
     methodStructContents.emplace_back(MethType);
     methodStructContents.emplace_back(BitCastedIMP);
@@ -476,8 +472,8 @@ struct AntiClassDump : public ModulePass {
         ArrayRef<Constant *>(methodStructContents)); // objc_method_t
     Constant *newMethodList = ConstantArray::get(
         AT, ArrayRef<Constant *>(newMethod)); // Container of objc_method_t
-    vector<Type *> newStructType;
-    vector<Constant *> newStructValue;
+    std::vector<Type *> newStructType;
+    std::vector<Constant *> newStructValue;
     // I'm fully aware that it's consistent Int32 on all platforms
     // This is future-proof
     newStructType.emplace_back(Type::getInt32Ty(M->getContext()));
@@ -617,7 +613,7 @@ struct AntiClassDump : public ModulePass {
                               ->getOperand(0)
                   : methodStruct->getOperand(2),
               IMPType);
-          vector<Value *> replaceMethodArgs;
+          std::vector<Value *> replaceMethodArgs;
           if (isMetaClass) {
             CallInst *className = IRB->CreateCall(class_getName, {Class});
             CallInst *MetaClass =

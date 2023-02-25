@@ -94,15 +94,16 @@
 #include "llvm/Transforms/Obfuscation/BogusControlFlow.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
-#include "llvm/IR/InstIterator.h"
-#include "llvm/IR/NoFolder.h"
-#include "llvm/Support/TargetSelect.h"
+#include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include <memory>
+#include "llvm/Transforms/Utils/ValueMapper.h"
+
+using namespace llvm;
 
 // Options for the pass
-const int defaultObfRate = 70, defaultObfTime = 1;
+static const int defaultObfRate = 70, defaultObfTime = 1;
 
 static cl::opt<int>
     ObfProbRate("bcf_prob",
@@ -143,13 +144,14 @@ static cl::opt<bool> CreateFunctionForOpaquePredicate(
     "bcf_createfunc", cl::desc("Create function for each opaque predicate"),
     cl::value_desc("create function"), cl::init(false), cl::Optional);
 
-static Instruction::BinaryOps ops[] = {
+static const Instruction::BinaryOps ops[] = {
     Instruction::Add, Instruction::Sub, Instruction::And, Instruction::Or,
     Instruction::Xor, Instruction::Mul, Instruction::UDiv};
-static CmpInst::Predicate preds[] = {CmpInst::ICMP_EQ,  CmpInst::ICMP_NE,
-                                     CmpInst::ICMP_UGT, CmpInst::ICMP_UGE,
-                                     CmpInst::ICMP_ULT, CmpInst::ICMP_ULE};
-namespace {
+static const CmpInst::Predicate preds[] = {
+    CmpInst::ICMP_EQ,  CmpInst::ICMP_NE,  CmpInst::ICMP_UGT,
+    CmpInst::ICMP_UGE, CmpInst::ICMP_ULT, CmpInst::ICMP_ULE};
+
+namespace llvm {
 static bool OnlyUsedBy(Value *V, Value *Usr) {
   for (User *U : V->users())
     if (U != Usr)
@@ -158,10 +160,10 @@ static bool OnlyUsedBy(Value *V, Value *Usr) {
 }
 static void RemoveDeadConstant(Constant *C) {
   assert(C->use_empty() && "Constant is not dead!");
-  SmallPtrSet<Constant *, 4> Operands;
+  SmallVector<Constant *, 4> Operands;
   for (Value *Op : C->operands())
     if (OnlyUsedBy(Op, C))
-      Operands.insert(cast<Constant>(Op));
+      Operands.emplace_back(cast<Constant>(Op));
   if (GlobalVariable *GV = dyn_cast<GlobalVariable>(C)) {
     if (!GV->hasLocalLinkage())
       return; // Don't delete non-static globals.
@@ -178,7 +180,7 @@ static void RemoveDeadConstant(Constant *C) {
 struct BogusControlFlow : public FunctionPass {
   static char ID; // Pass identification
   bool flag;
-  vector<ICmpInst *> needtoedit;
+  std::vector<ICmpInst *> needtoedit;
   BogusControlFlow() : FunctionPass(ID) { this->flag = true; }
   BogusControlFlow(bool flag) : FunctionPass(ID) { this->flag = flag; }
   /* runOnFunction
@@ -209,7 +211,7 @@ struct BogusControlFlow : public FunctionPass {
 
     // If fla annotations
     if (toObfuscate(flag, &F, "bcf") && !F.isPresplitCoroutine() &&
-        readAnnotate(&F).find("bcfopfunc") == string::npos) {
+        readAnnotate(&F).find("bcfopfunc") == std::string::npos) {
       errs() << "Running BogusControlFlow On " << F.getName() << "\n";
       bogus(F);
       doF(F);
@@ -232,7 +234,7 @@ struct BogusControlFlow : public FunctionPass {
 
       while (!basicBlocks.empty()) {
         // Basic Blocks' selection
-        if ((int)llvm::cryptoutils->get_range(100) <= ObfProbRate) {
+        if ((int)cryptoutils->get_range(100) <= ObfProbRate) {
           // Add bogus flow to the given Basic Block (see description)
           BasicBlock *basicBlock = basicBlocks.front();
           addBogusFlow(basicBlock, F);
@@ -345,7 +347,7 @@ struct BogusControlFlow : public FunctionPass {
     needtoedit.emplace_back(condition2);
     // Do random behavior to avoid pattern recognition.
     // This is achieved by jumping to a random BB
-    switch (llvm::cryptoutils->get_range(2)) {
+    switch (cryptoutils->get_range(2)) {
     case 0: {
       BranchInst::Create(originalBBpart2, originalBB, condition2, originalBB);
       break;
@@ -426,10 +428,10 @@ struct BogusControlFlow : public FunctionPass {
               opcode == Instruction::LShr || opcode == Instruction::AShr ||
               opcode == Instruction::And || opcode == Instruction::Or ||
               opcode == Instruction::Xor) {
-            for (int random = (int)llvm::cryptoutils->get_range(10);
-                 random < 10; ++random) {
-              switch (llvm::cryptoutils->get_range(4)) { // to improve
-              case 0:                                    // do nothing
+            for (int random = (int)cryptoutils->get_range(10); random < 10;
+                 ++random) {
+              switch (cryptoutils->get_range(4)) { // to improve
+              case 0:                              // do nothing
                 break;
               case 1:
                 op = BinaryOperator::CreateNeg(i->getOperand(0), *var, &*i);
@@ -453,10 +455,10 @@ struct BogusControlFlow : public FunctionPass {
           if (opcode == Instruction::FAdd || opcode == Instruction::FSub ||
               opcode == Instruction::FMul || opcode == Instruction::FDiv ||
               opcode == Instruction::FRem) {
-            for (int random = (int)llvm::cryptoutils->get_range(10);
-                 random < 10; ++random) {
-              switch (llvm::cryptoutils->get_range(3)) { // can be improved
-              case 0:                                    // do nothing
+            for (int random = (int)cryptoutils->get_range(10); random < 10;
+                 ++random) {
+              switch (cryptoutils->get_range(3)) { // can be improved
+              case 0:                              // do nothing
                 break;
               case 1:
                 op = UnaryOperator::CreateFNeg(i->getOperand(0), *var, &*i);
@@ -474,14 +476,14 @@ struct BogusControlFlow : public FunctionPass {
           }
           if (opcode == Instruction::ICmp) { // Condition (with int)
             ICmpInst *currentI = (ICmpInst *)(&i);
-            switch (llvm::cryptoutils->get_range(3)) { // must be improved
-            case 0:                                    // do nothing
+            switch (cryptoutils->get_range(3)) { // must be improved
+            case 0:                              // do nothing
               break;
             case 1:
               currentI->swapOperands();
               break;
             case 2: // randomly change the predicate
-              switch (llvm::cryptoutils->get_range(10)) {
+              switch (cryptoutils->get_range(10)) {
               case 0:
                 currentI->setPredicate(ICmpInst::ICMP_EQ);
                 break; // equal
@@ -518,14 +520,14 @@ struct BogusControlFlow : public FunctionPass {
           }
           if (opcode == Instruction::FCmp) { // Conditions (with float)
             FCmpInst *currentI = (FCmpInst *)(&i);
-            switch (llvm::cryptoutils->get_range(3)) { // must be improved
-            case 0:                                    // do nothing
+            switch (cryptoutils->get_range(3)) { // must be improved
+            case 0:                              // do nothing
               break;
             case 1:
               currentI->swapOperands();
               break;
             case 2: // randomly change the predicate
-              switch (llvm::cryptoutils->get_range(10)) {
+              switch (cryptoutils->get_range(10)) {
               case 0:
                 currentI->setPredicate(FCmpInst::FCMP_OEQ);
                 break; // ordered and equal
@@ -563,8 +565,8 @@ struct BogusControlFlow : public FunctionPass {
         }
       }
       // Remove DIs from AlterBB
-      vector<CallInst *> toRemove;
-      vector<Constant *> DeadConstants;
+      std::vector<CallInst *> toRemove;
+      std::vector<Constant *> DeadConstants;
       for (Instruction &I : *alteredBB) {
         if (CallInst *CI = dyn_cast<CallInst>(&I)) {
           if (CI->getCalledFunction() != nullptr &&
@@ -600,11 +602,11 @@ struct BogusControlFlow : public FunctionPass {
       }
     }
     if (JunkAssembly || OnlyJunkAssembly) {
-      string junk = "";
+      std::string junk = "";
       for (uint32_t i = cryptoutils->get_range(MinNumberOfJunkAssembly,
                                                MaxNumberOfJunkAssembly);
            i > 0; i--)
-        junk += ".long " + to_string(cryptoutils->get_uint32_t()) + "\n";
+        junk += ".long " + std::to_string(cryptoutils->get_uint32_t()) + "\n";
       InlineAsm *IA = InlineAsm::get(
           FunctionType::get(Type::getVoidTy(alteredBB->getContext()), false),
           junk, "", true, false);
@@ -619,7 +621,7 @@ struct BogusControlFlow : public FunctionPass {
    * of the function.
    */
   bool doF(Function &F) {
-    vector<Instruction *> toEdit, toDelete;
+    std::vector<Instruction *> toEdit, toDelete;
     // Looking for the conditions and branches to transform
     for (BasicBlock &BB : F) {
       Instruction *tbb = BB.getTerminator();
@@ -691,7 +693,7 @@ struct BogusControlFlow : public FunctionPass {
       Value *emuLHS = LHSC;
       Value *emuRHS = RHSC;
       Instruction::BinaryOps initialOp =
-          ops[llvm::cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
+          ops[cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
       Value *emuLast =
           IRBEmu.CreateBinOp(initialOp, emuLHS, emuRHS, "EmuInitialCondition");
       Value *Last = (CreateFunctionForOpaquePredicate ? IRBOp : IRBReal)
@@ -700,7 +702,7 @@ struct BogusControlFlow : public FunctionPass {
         Constant *newTmp =
             ConstantInt::get(I32Ty, cryptoutils->get_range(1, UINT32_MAX));
         Instruction::BinaryOps initialOp2 =
-            ops[llvm::cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
+            ops[cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
         emuLast = IRBEmu.CreateBinOp(initialOp2, emuLast, newTmp,
                                      "EmuInitialCondition");
         Last = (CreateFunctionForOpaquePredicate ? IRBOp : IRBReal)
@@ -708,7 +710,7 @@ struct BogusControlFlow : public FunctionPass {
       }
       // Randomly Generate Predicate
       CmpInst::Predicate pred =
-          preds[llvm::cryptoutils->get_range(sizeof(preds) / sizeof(preds[0]))];
+          preds[cryptoutils->get_range(sizeof(preds) / sizeof(preds[0]))];
       if (CreateFunctionForOpaquePredicate) {
         IRBOp->CreateRet(IRBOp->CreateICmp(pred, Last, RealRHS));
         Last = IRBReal->CreateCall(opFunction);
@@ -738,7 +740,7 @@ struct BogusControlFlow : public FunctionPass {
     return true;
   } // end of doFinalization
 };  // end of struct BogusControlFlow : public FunctionPass
-} // namespace
+} // namespace llvm
 
 char BogusControlFlow::ID = 0;
 INITIALIZE_PASS(BogusControlFlow, "bcfobf", "Enable BogusControlFlow.", true,

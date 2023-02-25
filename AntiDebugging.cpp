@@ -15,44 +15,40 @@
     You should have received a copy of the GNU Affero General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#include "llvm/Transforms/Obfuscation/AntiDebugging.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Value.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
-#include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Obfuscation/Obfuscation.h"
-#include <cstdlib>
+#include "llvm/Transforms/Obfuscation/CryptoUtils.h"
+#include "llvm/Transforms/Obfuscation/Utils.h"
 #include <fstream>
-#include <iostream>
-#include <string>
+
 using namespace llvm;
-using namespace std;
-static cl::opt<string> PreCompiledIRPath(
+
+static cl::opt<std::string> PreCompiledIRPath(
     "adbextirpath",
-    cl::desc(
-        "External Path Pointing To Pre-compiled AntiDebugging IR.See Wiki"),
+    cl::desc("External Path Pointing To Pre-compiled AntiDebugging IR"),
     cl::value_desc("filename"), cl::init(""));
 static cl::opt<int>
     ProbRate("adb_prob",
              cl::desc("Choose the probability [%] For Each Function To Be "
                       "Obfuscated By AntiDebugging"),
              cl::value_desc("Probability Rate"), cl::init(40), cl::Optional);
+
 namespace llvm {
 struct AntiDebugging : public ModulePass {
   static char ID;
   bool flag;
   bool initialized;
+  Triple triple;
   AntiDebugging() : ModulePass(ID) {
     this->flag = true;
     this->initialized = false;
@@ -75,12 +71,12 @@ struct AntiDebugging : public ModulePass {
         PreCompiledIRPath = Path.c_str();
       }
     }
-    ifstream f(PreCompiledIRPath);
+    std::ifstream f(PreCompiledIRPath);
     if (f.good()) {
       errs() << "Linking PreCompiled AntiDebugging IR From:"
              << PreCompiledIRPath << "\n";
       SMDiagnostic SMD;
-      unique_ptr<Module> ADBM(
+      std::unique_ptr<Module> ADBM(
           parseIRFile(StringRef(PreCompiledIRPath), SMD, M.getContext()));
       Linker::linkModules(M, std::move(ADBM), Linker::Flags::LinkOnlyNeeded);
       // FIXME: Mess with GV in ADBCallBack
@@ -110,6 +106,7 @@ struct AntiDebugging : public ModulePass {
              << PreCompiledIRPath << "\n";
     }
     this->initialized = true;
+    this->triple = Triple(M.getTargetTriple());
     return true;
   }
   bool runOnModule(Module &M) override {
@@ -124,7 +121,7 @@ struct AntiDebugging : public ModulePass {
         errs() << "Running AntiDebugging On " << F.getName() << "\n";
         if (!this->initialized)
           initialize(M);
-        if ((int)llvm::cryptoutils->get_range(100) <= ProbRate)
+        if ((int)cryptoutils->get_range(100) <= ProbRate)
           runOnFunction(F);
       }
     }
@@ -145,17 +142,16 @@ struct AntiDebugging : public ModulePass {
                              // causes register contamination if the return type
                              // is not Void.
         return false;
-      Triple Tri(F.getParent()->getTargetTriple());
-      if (Tri.isOSDarwin() && Tri.isAArch64()) {
+      if (triple.isOSDarwin() && triple.isAArch64()) {
         errs() << "Injecting Inline Assembly AntiDebugging For:"
                << F.getParent()->getTargetTriple() << "\n";
-        string antidebugasm = "";
+        std::string antidebugasm = "";
         switch (cryptoutils->get_range(2)) {
         case 0: {
-          string s[] = {"mov x0, #31\n", "mov w0, #31\n", "mov x1, #0\n",
-                        "mov w1, #0\n",  "mov x2, #0\n",  "mov w2, #0\n",
-                        "mov x3, #0\n",  "mov w3, #0\n",  "mov x16, #26\n",
-                        "mov w16, #26\n"}; // svc ptrace
+          std::string s[] = {"mov x0, #31\n", "mov w0, #31\n", "mov x1, #0\n",
+                             "mov w1, #0\n",  "mov x2, #0\n",  "mov w2, #0\n",
+                             "mov x3, #0\n",  "mov w3, #0\n",  "mov x16, #26\n",
+                             "mov w16, #26\n"}; // svc ptrace
           bool c[5] = {false, false, false, false, false};
           while (c[0] != true || c[1] != true || c[2] != true || c[3] != true ||
                  c[4] != true) {
@@ -197,10 +193,10 @@ struct AntiDebugging : public ModulePass {
           break;
         }
         case 1: {
-          string s[] = {"mov x0, #26\n", "mov w0, #26\n", "mov x1, #31\n",
-                        "mov w1, #31\n", "mov x2, #0\n",  "mov w2, #0\n",
-                        "mov x3, #0\n",  "mov w3, #0\n",  "mov x16, #0\n",
-                        "mov w16, #0\n"}; // svc syscall ptrace
+          std::string s[] = {"mov x0, #26\n", "mov w0, #26\n", "mov x1, #31\n",
+                             "mov w1, #31\n", "mov x2, #0\n",  "mov w2, #0\n",
+                             "mov x3, #0\n",  "mov w3, #0\n",  "mov x16, #0\n",
+                             "mov w16, #0\n"}; // svc syscall ptrace
           bool c[5] = {false, false, false, false, false};
           while (c[0] != true || c[1] != true || c[2] != true || c[3] != true ||
                  c[4] != true) {
@@ -243,7 +239,7 @@ struct AntiDebugging : public ModulePass {
         }
         }
         antidebugasm +=
-            "svc #" + to_string(cryptoutils->get_range(65536)) + "\n";
+            "svc #" + std::to_string(cryptoutils->get_range(65536)) + "\n";
         InlineAsm *IA = InlineAsm::get(
             FunctionType::get(Type::getVoidTy(EntryBlock->getContext()), false),
             antidebugasm, "", true, false);

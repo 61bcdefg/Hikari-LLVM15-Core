@@ -2,41 +2,25 @@
 // [License](https://github.com/HikariObfuscator/Hikari/wiki/License).
 //===----------------------------------------------------------------------===//
 #include "llvm/Transforms/Obfuscation/StringEncryption.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
-#include "llvm/IR/Instructions.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/Value.h"
-#include "llvm/Pass.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/TargetSelect.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Obfuscation.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
-#include <algorithm>
-#include <cstdlib>
-#include <iostream>
-#include <map>
-#include <set>
-#include <string>
 
 using namespace llvm;
-using namespace std;
 
 namespace llvm {
 struct StringEncryption : public ModulePass {
   static char ID;
   bool flag;
   bool opaquepointers;
-  map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
+  std::map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
       encstatus;
-  map<GlobalVariable *, pair<Constant *, GlobalVariable *>> mgv2keys;
-  vector<GlobalVariable *> genedgv;
+  std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> mgv2keys;
+  std::vector<GlobalVariable *> genedgv;
   StringEncryption() : ModulePass(ID) { this->flag = true; }
 
   StringEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
@@ -44,7 +28,7 @@ struct StringEncryption : public ModulePass {
   StringRef getPassName() const override { return "StringEncryption"; }
 
   bool usersAllInOneFunction(GlobalVariable *GV) {
-    vector<Instruction *> instusers;
+    std::vector<Instruction *> instusers;
     for (User *user : GV->users()) {
       if (Instruction *Inst = dyn_cast<Instruction>(user))
         instusers.emplace_back(Inst);
@@ -68,15 +52,14 @@ struct StringEncryption : public ModulePass {
   }
 
   bool handleableGV(GlobalVariable *GV) {
-    if (GV->hasInitializer() && GV->getSection() != "llvm.metadata" &&
-        GV->getSection() != "llvm.ptrauth" &&
+    if (GV->hasInitializer() && !GV->getSection().startswith("llvm.") &&
         !(GV->getSection().contains("__objc") &&
           !GV->getSection().contains("array")) &&
         !GV->getName().contains("OBJC") &&
+        std::find(genedgv.begin(), genedgv.end(), GV) == genedgv.end() &&
         ((GV->getLinkage() == GlobalValue::LinkageTypes::PrivateLinkage ||
           GV->getLinkage() == GlobalValue::LinkageTypes::InternalLinkage) &&
-         (flag || usersAllInOneFunction(GV))) &&
-        std::find(genedgv.begin(), genedgv.end(), GV) == genedgv.end())
+         (flag || usersAllInOneFunction(GV))))
       return true;
     return false;
   }
@@ -85,7 +68,7 @@ struct StringEncryption : public ModulePass {
     // in runOnModule. We simple iterate function list and dispatch functions
     // to handlers
     this->opaquepointers = !M.getContext().supportsTypedPointers();
-    for (Function &F : M) {
+    for (Function &F : M)
       if (toObfuscate(flag, &F, "strenc")) {
         errs() << "Running StringEncryption On " << F.getName() << "\n";
         Constant *S =
@@ -96,14 +79,13 @@ struct StringEncryption : public ModulePass {
         encstatus[&F] = GV;
         HandleFunction(&F);
       }
-    }
     return true;
   }
 
   void HandleFunction(Function *Func) {
     FixFunctionConstantExpr(Func);
-    vector<GlobalVariable *> Globals;
-    set<User *> Users;
+    std::vector<GlobalVariable *> Globals;
+    std::set<User *> Users;
     for (Instruction &I : instructions(Func))
       for (Value *Op : I.operands())
         if (GlobalVariable *G =
@@ -113,11 +95,12 @@ struct StringEncryption : public ModulePass {
           Users.insert(&I);
           Globals.emplace_back(G);
         }
-    set<GlobalVariable *> rawStrings;
-    set<GlobalVariable *> objCStrings;
-    map<GlobalVariable *, pair<Constant *, GlobalVariable *>> GV2Keys;
-    map<GlobalVariable * /*old*/, pair<GlobalVariable * /*encrypted*/,
-                                       GlobalVariable * /*decrypt space*/>>
+    std::set<GlobalVariable *> rawStrings;
+    std::set<GlobalVariable *> objCStrings;
+    std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> GV2Keys;
+    std::map<GlobalVariable * /*old*/,
+             std::pair<GlobalVariable * /*encrypted*/,
+                       GlobalVariable * /*decrypt space*/>>
         old2new;
 
     auto end = Globals.end();
@@ -126,14 +109,15 @@ struct StringEncryption : public ModulePass {
     }
     Globals.erase(end, Globals.end());
 
-    vector<GlobalVariable *> transedGlobals;
+    Module *M = Func->getParent();
+
+    std::vector<GlobalVariable *> transedGlobals, unhandleablegvs;
 
     do {
       for (GlobalVariable *GV : Globals) {
         if (std::find(transedGlobals.begin(), transedGlobals.end(), GV) ==
             transedGlobals.end()) {
           bool breakThisFor = false;
-          vector<GlobalVariable *> unhandleablegvs;
           if (handleableGV(GV)) {
             if (GlobalVariable *CastedGV = dyn_cast<GlobalVariable>(
                     GV->getInitializer()->stripPointerCasts())) {
@@ -146,7 +130,7 @@ struct StringEncryption : public ModulePass {
               }
             }
             if (GV->getInitializer()->getType() ==
-                StructType::getTypeByName(Func->getParent()->getContext(),
+                StructType::getTypeByName(M->getContext(),
                                           "struct.__NSConstantString_tag")) {
               objCStrings.insert(GV);
               rawStrings.insert(cast<GlobalVariable>(
@@ -195,31 +179,30 @@ struct StringEncryption : public ModulePass {
           } else {
             unhandleablegvs.emplace_back(GV);
           }
-          for (GlobalVariable *ugv : unhandleablegvs)
-            if (std::find(genedgv.begin(), genedgv.end(), ugv) !=
-                genedgv.end()) {
-              pair<Constant *, GlobalVariable *> mgv2keysval = mgv2keys[ugv];
-              if (ugv->getInitializer()->getType() ==
-                  StructType::getTypeByName(Func->getParent()->getContext(),
-                                            "struct.__NSConstantString_tag")) {
-                GlobalVariable *rawgv = cast<GlobalVariable>(
-                    cast<ConstantStruct>(ugv->getInitializer())
-                        ->getOperand(2)
-                        ->stripPointerCasts());
-                mgv2keysval = mgv2keys[rawgv];
-                if (mgv2keysval.first && mgv2keysval.second) {
-                  GV2Keys[rawgv] = mgv2keysval;
-                }
-              } else if (mgv2keysval.first && mgv2keysval.second) {
-                GV2Keys[ugv] = mgv2keysval;
-              }
-            }
           transedGlobals.emplace_back(GV);
           if (breakThisFor)
             break;
         }
       } // foreach loop
     } while (transedGlobals.size() != Globals.size());
+    for (GlobalVariable *ugv : unhandleablegvs)
+      if (std::find(genedgv.begin(), genedgv.end(), ugv) != genedgv.end()) {
+        std::pair<Constant *, GlobalVariable *> mgv2keysval = mgv2keys[ugv];
+        if (ugv->getInitializer()->getType() ==
+            StructType::getTypeByName(M->getContext(),
+                                      "struct.__NSConstantString_tag")) {
+          GlobalVariable *rawgv =
+              cast<GlobalVariable>(cast<ConstantStruct>(ugv->getInitializer())
+                                       ->getOperand(2)
+                                       ->stripPointerCasts());
+          mgv2keysval = mgv2keys[rawgv];
+          if (mgv2keysval.first && mgv2keysval.second) {
+            GV2Keys[rawgv] = mgv2keysval;
+          }
+        } else if (mgv2keysval.first && mgv2keysval.second) {
+          GV2Keys[ugv] = mgv2keysval;
+        }
+      }
     for (GlobalVariable *GV : rawStrings) {
       if (GV->getInitializer()->isZeroValue() ||
           GV->getInitializer()->isNullValue())
@@ -231,94 +214,84 @@ struct StringEncryption : public ModulePass {
       if (!isa<IntegerType>(memberType))
         continue;
       IntegerType *intType = cast<IntegerType>(memberType);
-      Constant *KeyConst = nullptr;
-      Constant *EncryptedConst = nullptr;
-      Constant *DummyConst = nullptr;
-      if (intType == Type::getInt8Ty(GV->getParent()->getContext())) {
-        vector<uint8_t> keys;
-        vector<uint8_t> encry;
-        vector<uint8_t> dummy;
+      Constant *KeyConst, *EncryptedConst, *DummyConst = nullptr;
+      if (intType == Type::getInt8Ty(M->getContext())) {
+        std::vector<uint8_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
-          uint8_t K = cryptoutils->get_uint8_t();
-          uint64_t V = CDS->getElementAsInteger(i);
+          const uint8_t K = cryptoutils->get_uint8_t();
+          const uint64_t V = CDS->getElementAsInteger(i);
           keys.emplace_back(K);
           encry.emplace_back(K ^ V);
           dummy.emplace_back(cryptoutils->get_uint8_t());
         }
-        KeyConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                          ArrayRef<uint8_t>(keys));
-        EncryptedConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                                ArrayRef<uint8_t>(encry));
-        DummyConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                            ArrayRef<uint8_t>(dummy));
+        KeyConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint8_t>(keys));
+        EncryptedConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint8_t>(encry));
+        DummyConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint8_t>(dummy));
 
-      } else if (intType == Type::getInt16Ty(GV->getParent()->getContext())) {
-        vector<uint16_t> keys;
-        vector<uint16_t> encry;
-        vector<uint16_t> dummy;
+      } else if (intType == Type::getInt16Ty(M->getContext())) {
+        std::vector<uint16_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
-          uint16_t K = cryptoutils->get_uint16_t();
-          uint64_t V = CDS->getElementAsInteger(i);
+          const uint16_t K = cryptoutils->get_uint16_t();
+          const uint64_t V = CDS->getElementAsInteger(i);
           keys.emplace_back(K);
           encry.emplace_back(K ^ V);
           dummy.emplace_back(cryptoutils->get_uint16_t());
         }
-        KeyConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                          ArrayRef<uint16_t>(keys));
-        EncryptedConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                                ArrayRef<uint16_t>(encry));
-        DummyConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                            ArrayRef<uint16_t>(dummy));
-      } else if (intType == Type::getInt32Ty(GV->getParent()->getContext())) {
-        vector<uint32_t> keys;
-        vector<uint32_t> encry;
-        vector<uint32_t> dummy;
+        KeyConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint16_t>(keys));
+        EncryptedConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint16_t>(encry));
+        DummyConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint16_t>(dummy));
+      } else if (intType == Type::getInt32Ty(M->getContext())) {
+        std::vector<uint32_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
-          uint32_t K = cryptoutils->get_uint32_t();
-          uint64_t V = CDS->getElementAsInteger(i);
+          const uint32_t K = cryptoutils->get_uint32_t();
+          const uint64_t V = CDS->getElementAsInteger(i);
           keys.emplace_back(K);
           encry.emplace_back(K ^ V);
           dummy.emplace_back(cryptoutils->get_uint32_t());
         }
-        KeyConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                          ArrayRef<uint32_t>(keys));
-        EncryptedConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                                ArrayRef<uint32_t>(encry));
-        DummyConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                            ArrayRef<uint32_t>(dummy));
-      } else if (intType == Type::getInt64Ty(GV->getParent()->getContext())) {
-        vector<uint64_t> keys;
-        vector<uint64_t> encry;
-        vector<uint64_t> dummy;
+        KeyConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint32_t>(keys));
+        EncryptedConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint32_t>(encry));
+        DummyConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint32_t>(dummy));
+      } else if (intType == Type::getInt64Ty(M->getContext())) {
+        std::vector<uint64_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
-          uint64_t K = cryptoutils->get_uint64_t();
-          uint64_t V = CDS->getElementAsInteger(i);
+          const uint64_t K = cryptoutils->get_uint64_t();
+          const uint64_t V = CDS->getElementAsInteger(i);
           keys.emplace_back(K);
           encry.emplace_back(K ^ V);
-          dummy.emplace_back(cryptoutils->get_uint32_t());
+          dummy.emplace_back(cryptoutils->get_uint64_t());
         }
-        KeyConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                          ArrayRef<uint64_t>(keys));
-        EncryptedConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                                ArrayRef<uint64_t>(encry));
-        DummyConst = ConstantDataArray::get(GV->getParent()->getContext(),
-                                            ArrayRef<uint64_t>(dummy));
+        KeyConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint64_t>(keys));
+        EncryptedConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint64_t>(encry));
+        DummyConst =
+            ConstantDataArray::get(M->getContext(), ArrayRef<uint64_t>(dummy));
       } else {
         llvm_unreachable("Unsupported CDS Type");
       }
       // Prepare new rawGV
       GlobalVariable *EncryptedRawGV = new GlobalVariable(
-          *(GV->getParent()), EncryptedConst->getType(), false,
-          GV->getLinkage(), EncryptedConst, "EncryptedString", nullptr,
-          GV->getThreadLocalMode(), GV->getType()->getAddressSpace());
+          *M, EncryptedConst->getType(), false, GV->getLinkage(),
+          EncryptedConst, "EncryptedString", nullptr, GV->getThreadLocalMode(),
+          GV->getType()->getAddressSpace());
       genedgv.emplace_back(EncryptedRawGV);
       GlobalVariable *DecryptSpaceGV = new GlobalVariable(
-          *(GV->getParent()), DummyConst->getType(), false, GV->getLinkage(),
-          DummyConst, "DecryptSpace", nullptr, GV->getThreadLocalMode(),
+          *M, DummyConst->getType(), false, GV->getLinkage(), DummyConst,
+          "DecryptSpace", nullptr, GV->getThreadLocalMode(),
           GV->getType()->getAddressSpace());
       genedgv.emplace_back(DecryptSpaceGV);
-      old2new[GV] = make_pair(EncryptedRawGV, DecryptSpaceGV);
-      GV2Keys[DecryptSpaceGV] = make_pair(KeyConst, EncryptedRawGV);
+      old2new[GV] = std::make_pair(EncryptedRawGV, DecryptSpaceGV);
+      GV2Keys[DecryptSpaceGV] = std::make_pair(KeyConst, EncryptedRawGV);
       mgv2keys[DecryptSpaceGV] = GV2Keys[DecryptSpaceGV];
     }
     // Now prepare ObjC new GV
@@ -329,23 +302,21 @@ struct StringEncryption : public ModulePass {
       if (old2new.find(oldrawString) ==
           old2new.end()) // Filter out zero initializers
         continue;
-      GlobalVariable *EncryptedOCGV =
-          ObjectiveCString(GV, "EncryptedStringObjC", oldrawString,
-                           old2new[oldrawString].first, CS);
+      GlobalVariable *EncryptedOCGV = ObjectiveCString(
+          GV, "EncryptedStringObjC", old2new[oldrawString].first, CS);
       genedgv.emplace_back(EncryptedOCGV);
-      GlobalVariable *DecryptSpaceOCGV =
-          ObjectiveCString(GV, "DecryptSpaceObjC", oldrawString,
-                           old2new[oldrawString].second, CS);
+      GlobalVariable *DecryptSpaceOCGV = ObjectiveCString(
+          GV, "DecryptSpaceObjC", old2new[oldrawString].second, CS);
       genedgv.emplace_back(DecryptSpaceOCGV);
-      old2new[GV] = make_pair(EncryptedOCGV, DecryptSpaceOCGV);
+      old2new[GV] = std::make_pair(EncryptedOCGV, DecryptSpaceOCGV);
     } // End prepare ObjC new GV
     if (GV2Keys.empty())
       return;
     // Replace Uses
     for (User *U : Users) {
-      for (map<GlobalVariable *,
-               pair<GlobalVariable *, GlobalVariable *>>::iterator iter =
-               old2new.begin();
+      for (std::map<GlobalVariable *,
+                    std::pair<GlobalVariable *, GlobalVariable *>>::iterator
+               iter = old2new.begin();
            iter != old2new.end(); ++iter) {
         U->replaceUsesOfWith(iter->first, iter->second.second);
         iter->first->removeDeadConstantUsers();
@@ -359,9 +330,9 @@ struct StringEncryption : public ModulePass {
         GV->eraseFromParent();
       }
     // CleanUp Old Raw GVs
-    for (map<GlobalVariable *,
-             pair<GlobalVariable *, GlobalVariable *>>::iterator iter =
-             old2new.begin();
+    for (std::map<GlobalVariable *,
+                  std::pair<GlobalVariable *, GlobalVariable *>>::iterator
+             iter = old2new.begin();
          iter != old2new.end(); ++iter) {
       GlobalVariable *toDelete = iter->first;
       toDelete->removeDeadConstantUsers();
@@ -411,12 +382,11 @@ struct StringEncryption : public ModulePass {
     SI->setAtomic(AtomicOrdering::Release); // Release the lock acquired in LI
   }                                         // End of HandleFunction
 
-  GlobalVariable *ObjectiveCString(GlobalVariable *GV, string name,
-                                   GlobalVariable *oldrawString,
+  GlobalVariable *ObjectiveCString(GlobalVariable *GV, std::string name,
                                    GlobalVariable *newString,
                                    ConstantStruct *CS) {
     Value *zero = ConstantInt::get(Type::getInt32Ty(GV->getContext()), 0);
-    vector<Constant *> vals;
+    std::vector<Constant *> vals;
     vals.emplace_back(CS->getOperand(0));
     vals.emplace_back(CS->getOperand(1));
     Constant *GEPed = ConstantExpr::getInBoundsGetElementPtr(
@@ -441,11 +411,10 @@ struct StringEncryption : public ModulePass {
           cast<ConstantExpr>(newCS->getOperand(0))->getOperand(0));
       if (PtrauthGV->getSection() == "llvm.ptrauth" &&
           cast<GlobalVariable>(
-              GV->getParent()->getContext().supportsTypedPointers()
-                  ? cast<ConstantExpr>(
-                        PtrauthGV->getInitializer()->getOperand(2))
-                        ->getOperand(0)
-                  : PtrauthGV->getInitializer()->getOperand(2))
+              opaquepointers ? PtrauthGV->getInitializer()->getOperand(2)
+                             : cast<ConstantExpr>(
+                                   PtrauthGV->getInitializer()->getOperand(2))
+                                   ->getOperand(0))
                   ->getGlobalIdentifier() != ObjcGV->getGlobalIdentifier()) {
         GlobalVariable *NewPtrauthGV = new GlobalVariable(
             *PtrauthGV->getParent(), PtrauthGV->getValueType(), true,
@@ -475,11 +444,13 @@ struct StringEncryption : public ModulePass {
 
   void HandleDecryptionBlock(
       BasicBlock *B, BasicBlock *C,
-      map<GlobalVariable *, pair<Constant *, GlobalVariable *>> &GV2Keys) {
+      std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>>
+          &GV2Keys) {
     IRBuilder<> IRB(B);
     Value *zero = ConstantInt::get(Type::getInt32Ty(B->getContext()), 0);
-    for (map<GlobalVariable *, pair<Constant *, GlobalVariable *>>::iterator
-             iter = GV2Keys.begin();
+    for (std::map<GlobalVariable *,
+                  std::pair<Constant *, GlobalVariable *>>::iterator iter =
+             GV2Keys.begin();
          iter != GV2Keys.end(); ++iter) {
       ConstantDataArray *CastedCDA =
           cast<ConstantDataArray>(iter->second.first);

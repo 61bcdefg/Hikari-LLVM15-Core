@@ -1,49 +1,38 @@
 // For open-source license, please refer to
 // [License](https://github.com/HikariObfuscator/Hikari/wiki/License).
 //===----------------------------------------------------------------------===//
+#include "llvm/Transforms/Obfuscation/FunctionCallObfuscate.h"
 #include "json.hpp"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
-#include "llvm/Pass.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Obfuscation/Obfuscation.h"
+#include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/CallSite.h"
-#include <algorithm>
-#include <cstdlib>
 #include <fstream>
-#include <iostream>
-#include <regex>
-#include <string>
+
 using namespace llvm;
-using namespace std;
-#if LLVM_VERSION_MAJOR <= 14
-using json = nlohmann::json;
-#endif
+
 static const int DARWIN_FLAG = 0x2 | 0x8;
 static const int ANDROID64_FLAG = 0x00002 | 0x100;
 static const int ANDROID32_FLAG = 0x0000 | 0x2;
+
 static cl::opt<uint64_t>
     dlopen_flag("fco_flag",
                 cl::desc("The value of RTLD_DEFAULT on your platform"),
                 cl::value_desc("value"), cl::init(-1), cl::Optional);
-static cl::opt<string>
+static cl::opt<std::string>
     SymbolConfigPath("fcoconfig",
                      cl::desc("FunctionCallObfuscate Configuration Path"),
                      cl::value_desc("filename"), cl::init("+-x/"));
 namespace llvm {
 struct FunctionCallObfuscate : public FunctionPass {
   static char ID;
-#if LLVM_VERSION_MAJOR >= 15
   nlohmann::json Configuration;
-#else
-  json Configuration;
-#endif
   bool flag;
   bool initialized;
   bool objchandled;
@@ -67,7 +56,7 @@ struct FunctionCallObfuscate : public FunctionPass {
         SymbolConfigPath = Path.c_str();
       }
     }
-    ifstream infile(SymbolConfigPath);
+    std::ifstream infile(SymbolConfigPath);
     if (infile.good()) {
       errs() << "Loading Symbol Configuration From:" << SymbolConfigPath
              << "\n";
@@ -105,14 +94,14 @@ struct FunctionCallObfuscate : public FunctionPass {
     return true;
   }
   void HandleObjC(Module &M) {
-    vector<Instruction *> toErase;
+    std::vector<Instruction *> toErase;
     // Iterate all CLASSREF uses and replace with objc_getClass() call
     // Strings are encrypted in other passes
     for (GlobalVariable &GV : M.globals()) {
       if (!GV.hasName() || !GV.hasInitializer() || GV.user_empty())
         continue;
       if (GV.getName().contains("OBJC_CLASSLIST_REFERENCES")) {
-        string className = GV.getInitializer()->getName().str();
+        std::string className = GV.getInitializer()->getName().str();
         className.replace(className.find("OBJC_CLASS_$_"),
                           strlen("OBJC_CLASS_$_"), "");
         for (User *U : GV.users()) {
@@ -235,8 +224,9 @@ struct FunctionCallObfuscate : public FunctionPass {
 
           if (this->Configuration.find(calledFunction->getName().str()) !=
               this->Configuration.end()) {
-            string sname = this->Configuration[calledFunction->getName().str()]
-                               .get<string>();
+            std::string sname =
+                this->Configuration[calledFunction->getName().str()]
+                    .get<std::string>();
             StringRef calledFunctionName = StringRef(sname);
             BasicBlock *EntryBlock = CS->getParent();
             if (Tri.isOSDarwin()) {

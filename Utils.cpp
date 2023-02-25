@@ -2,22 +2,20 @@
 // [License](https://github.com/HikariObfuscator/Hikari/wiki/License).
 //===----------------------------------------------------------------------===//
 #include "llvm/Transforms/Obfuscation/Utils.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/NoFolder.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/Local.h"
 
 using namespace llvm;
 
+namespace llvm {
+
 // Shamefully borrowed from ../Scalar/RegToMem.cpp and .../IR/Instruction.cpp :(
 bool valueEscapes(Instruction *Inst) {
-  // https://reviews.llvm.org/D137700
-  if (!Inst->getType()->isSized())
-    return false;
-
   for (User *U : Inst->users()) {
     Instruction *I = cast<Instruction>(U);
     if (I->getParent() != Inst->getParent()) {
@@ -72,8 +70,8 @@ void FixBasicBlockConstantExpr(BasicBlock *BB) {
 }
 
 #if 0
-map<GlobalValue *, StringRef> BuildAnnotateMap(Module &M) {
-  map<GlobalValue *, StringRef> VAMap;
+std::map<GlobalValue *, StringRef> BuildAnnotateMap(Module &M) {
+  std::map<GlobalValue *, StringRef> VAMap;
   GlobalVariable *glob = M.getGlobalVariable("llvm.global.annotations");
   if (glob != nullptr && glob->hasInitializer()) {
     ConstantArray *CDA = cast<ConstantArray>(glob->getInitializer());
@@ -320,3 +318,5 @@ bool toObfuscate(bool flag, Function *f, std::string attribute) {
   }
   return flag;
 }
+
+} // namespace llvm

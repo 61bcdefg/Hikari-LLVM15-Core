@@ -7,9 +7,10 @@
   Ref : http://lists.llvm.org/pipermail/llvm-dev/2011-February/038109.html
 */
 #include "llvm/Transforms/Obfuscation/Obfuscation.h"
-#include <iostream>
+#include "llvm/Support/CommandLine.h"
+
 using namespace llvm;
-using namespace std;
+
 // Begin Obfuscator Options
 static cl::opt<uint64_t> AesSeed("aesSeed", cl::init(0x1337),
                                  cl::desc("seed for the PRNG"));
@@ -54,7 +55,7 @@ static cl::opt<bool>
                           cl::desc("Enable Function Wrapper."));
 // End Obfuscator Options
 
-static void LoadEnv() {
+static void LoadEnv(void) {
   if (getenv("SPLITOBF")) {
     EnableBasicBlockSplit = true;
   }
@@ -170,7 +171,7 @@ struct Obfuscation : public ModulePass {
     MP->runOnModule(M);
     delete MP;
     // Cleanup Flags
-    vector<Function *> toDelete;
+    std::vector<Function *> toDelete;
     for (Function &F : M)
       if (F.isDeclaration() && F.hasName() && F.getName().contains("hikari_")) {
         for (User *U : F.users())
@@ -184,10 +185,9 @@ struct Obfuscation : public ModulePass {
     timer->stopTimer();
     errs() << "Hikari Out\n";
     errs() << "Spend Time: "
-           << format("%.10f", timer->getTotalTime().getWallTime()) << "s"
+           << format("%.7f", timer->getTotalTime().getWallTime()) << "s"
            << "\n";
-    delete tg;
-    delete timer;
+    tg->clearAll();
     return true;
   } // End runOnModule
 };
@@ -198,8 +198,8 @@ ModulePass *createObfuscationLegacyPass() {
   } else {
     cryptoutils->prng_seed();
   }
-  cout << "Initializing Hikari Core with Revision ID:" << GIT_COMMIT_HASH
-       << endl;
+  errs() << "Initializing Hikari Core with Revision ID:" << GIT_COMMIT_HASH
+         << "\n";
   return new Obfuscation();
 }
 

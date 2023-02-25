@@ -1,21 +1,23 @@
 // For open-source license, please refer to
 // [License](https://github.com/HikariObfuscator/Hikari/wiki/License).
 //===----------------------------------------------------------------------===//
+#include "llvm/Transforms/Obfuscation/IndirectBranch.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/Value.h"
-#include "llvm/Pass.h"
+#include "llvm/IR/NoFolder.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Obfuscation/Obfuscation.h"
+#include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/SubstituteImpl.h"
+#include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/LegacyLowerSwitch.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
+
 using namespace llvm;
-using namespace std;
+
 static cl::opt<bool>
     UseStack("indibran-use-stack", cl::init(false), cl::NotHidden,
              cl::desc("[IndirectBranch]Stack-based indirect jumps"));
@@ -23,14 +25,15 @@ static cl::opt<bool>
     EncryptJumpTarget("indibran-enc-jump-target", cl::init(false),
                       cl::NotHidden,
                       cl::desc("[IndirectBranch]Encrypt jump target"));
+
 namespace llvm {
 struct IndirectBranch : public FunctionPass {
   static char ID;
   bool flag;
   bool initialized;
   Function *valwrapfunc;
-  map<BasicBlock *, unsigned long long> indexmap;
-  map<Function *, ConstantInt *> encmap;
+  std::map<BasicBlock *, unsigned long long> indexmap;
+  std::map<Function *, ConstantInt *> encmap;
   IndirectBranch() : FunctionPass(ID) {
     this->flag = true;
     this->initialized = false;
@@ -41,7 +44,7 @@ struct IndirectBranch : public FunctionPass {
   }
   StringRef getPassName() const override { return "IndirectBranch"; }
   bool initialize(Module &M) {
-    vector<Constant *> BBs;
+    std::vector<Constant *> BBs;
     unsigned long long i = 0;
     for (Function &F : M) {
       // See https://github.com/NeHyci/Hikari-LLVM15/issues/32
@@ -71,7 +74,8 @@ struct IndirectBranch : public FunctionPass {
         M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
         BlockAddressArray, "IndirectBranchingGlobalTable");
     appendToCompilerUsed(M, {Table});
-    // valwrap - make what IDA Pro displays in the pseudocode window even weirder.
+    // valwrap - make what IDA Pro displays in the pseudocode window even
+    // weirder.
     // In IDA Pro 7.7.220118
     // Original
     /* void __cdecl -[ViewController viewDidLoad](ViewController *self, SEL a2)
@@ -105,7 +109,7 @@ struct IndirectBranch : public FunctionPass {
     if (!this->initialized)
       initialize(*Func.getParent());
     errs() << "Running IndirectBranch On " << Func.getName() << "\n";
-    vector<BranchInst *> BIs;
+    std::vector<BranchInst *> BIs;
     for (Instruction &Inst : instructions(Func))
       if (BranchInst *BI = dyn_cast<BranchInst>(&Inst))
         BIs.emplace_back(BI);
@@ -117,8 +121,8 @@ struct IndirectBranch : public FunctionPass {
     Value *zero = ConstantInt::get(Int32Ty, 0);
 
     for (BranchInst *BI : BIs) {
-      IRBuilder<NoFolder> IRB(BI);
-      vector<BasicBlock *> BBs;
+      IRBuilder<NoFolder> IRBBI(BI);
+      std::vector<BasicBlock *> BBs;
       // We use the condition's evaluation result to generate the GEP
       // instruction  False evaluates to 0 while true evaluates to 1.  So here
       // we insert the false block first
@@ -131,7 +135,7 @@ struct IndirectBranch : public FunctionPass {
       if (BI->isConditional() ||
           indexmap.find(BI->getSuccessor(0)) == indexmap.end()) {
         ArrayType *AT = ArrayType::get(Int8PtrTy, BBs.size());
-        vector<Constant *> BlockAddresses;
+        std::vector<Constant *> BlockAddresses;
         for (BasicBlock *BB : BBs)
           BlockAddresses.emplace_back(
               EncryptJumpTarget ? ConstantExpr::getGetElementPtr(
@@ -155,7 +159,7 @@ struct IndirectBranch : public FunctionPass {
       Value *index, *RealIndex = nullptr;
       if (BI->isConditional()) {
         Value *condition = BI->getCondition();
-        index = IRB.CreateZExt(condition, Int32Ty);
+        index = IRBBI.CreateZExt(condition, Int32Ty);
         RealIndex = index;
       } else {
         Value *indexval = nullptr;
@@ -171,46 +175,47 @@ struct IndirectBranch : public FunctionPass {
                                             indexmap[BI->getSuccessor(0)]),
               "IndirectBranchingIndex");
           appendToCompilerUsed(*Func.getParent(), {indexgv});
-          indexval = IRB.CreateLoad(indexgv->getValueType(), indexgv);
+          indexval = IRBBI.CreateLoad(indexgv->getValueType(), indexgv);
         } else {
           indexval = ConstantInt::get(Int32Ty, indexmap[BI->getSuccessor(0)]);
         }
         if (UseStack) {
-          AllocaInst *AI = IRB.CreateAlloca(indexval->getType());
-          IRB.CreateStore(indexval, AI);
-          index = IRB.CreateLoad(AI->getAllocatedType(), AI);
+          AllocaInst *AI = IRBBI.CreateAlloca(indexval->getType());
+          IRBBI.CreateStore(indexval, AI);
+          index = IRBBI.CreateLoad(AI->getAllocatedType(), AI);
         } else {
           index = indexval;
         }
         RealIndex =
-            EncryptJumpTarget ? IRB.CreateXor(index, IndexEncKey) : index;
+            EncryptJumpTarget ? IRBBI.CreateXor(index, IndexEncKey) : index;
       }
       Value *LI, *enckeyLoad, *gepptr = nullptr;
       if (UseStack) {
-        AllocaInst *AI = IRB.CreateAlloca(LoadFrom->getType());
-        AllocaInst *AI2 = IRB.CreateAlloca(index->getType());
-        IRB.CreateStore(LoadFrom, AI);
-        IRB.CreateStore(RealIndex, AI2);
-        Value *GEP = IRB.CreateGEP(
-            LoadFrom->getValueType(), IRB.CreateLoad(LoadFrom->getType(), AI),
-            {zero, IRB.CreateLoad(index->getType(), AI2)});
-        Value *GEPLI = IRB.CreateLoad(GEP->getType(), GEP);
-        AllocaInst *AI3 = IRB.CreateAlloca(GEPLI->getType());
-        IRB.CreateStore(GEPLI, AI3);
+        AllocaInst *AI = IRBBI.CreateAlloca(LoadFrom->getType());
+        AllocaInst *AI2 = IRBBI.CreateAlloca(index->getType());
+        IRBBI.CreateStore(LoadFrom, AI);
+        IRBBI.CreateStore(RealIndex, AI2);
+        Value *GEP = IRBBI.CreateGEP(
+            LoadFrom->getValueType(), IRBBI.CreateLoad(LoadFrom->getType(), AI),
+            {zero, IRBBI.CreateLoad(index->getType(), AI2)});
+        Value *GEPLI = IRBBI.CreateLoad(GEP->getType(), GEP);
+        AllocaInst *AI3 = IRBBI.CreateAlloca(GEPLI->getType());
+        IRBBI.CreateStore(GEPLI, AI3);
         if (!EncryptJumpTarget)
-          LI = IRB.CreateLoad(Int8PtrTy,
-                              IRB.CreateLoad(AI3->getAllocatedType(), AI3),
-                              "IndirectBranchingTargetAddress");
+          LI = IRBBI.CreateLoad(Int8PtrTy,
+                                IRBBI.CreateLoad(AI3->getAllocatedType(), AI3),
+                                "IndirectBranchingTargetAddress");
         else
-          gepptr = IRB.CreateLoad(Int8PtrTy,
-                                  IRB.CreateLoad(AI3->getAllocatedType(), AI3));
+          gepptr = IRBBI.CreateLoad(
+              Int8PtrTy, IRBBI.CreateLoad(AI3->getAllocatedType(), AI3));
       } else {
-        Value *GEP = IRB.CreateGEP(LoadFrom->getValueType(), LoadFrom,
-                                   {zero, RealIndex});
+        Value *GEP = IRBBI.CreateGEP(LoadFrom->getValueType(), LoadFrom,
+                                     {zero, RealIndex});
         if (!EncryptJumpTarget)
-          LI = IRB.CreateLoad(Int8PtrTy, GEP, "IndirectBranchingTargetAddress");
+          LI = IRBBI.CreateLoad(Int8PtrTy, GEP,
+                                "IndirectBranchingTargetAddress");
         else
-          gepptr = IRB.CreateLoad(Int8PtrTy, GEP);
+          gepptr = IRBBI.CreateLoad(Int8PtrTy, GEP);
       }
       if (EncryptJumpTarget) {
         ConstantInt *encenckey = cast<ConstantInt>(
@@ -222,14 +227,14 @@ struct IndirectBranch : public FunctionPass {
                              encenckey->getValue() ^ encmap[&Func]->getValue()),
             "IndirectBranchingAddressEncryptKey");
         appendToCompilerUsed(*Func.getParent(), enckeyGV);
-        enckeyLoad = IRB.CreateXor(
-            IRB.CreateLoad(enckeyGV->getValueType(), enckeyGV), encenckey);
-        LI = IRB.CreateGEP(Int8Ty, gepptr, IRB.CreateSub(zero, enckeyLoad),
-                           "IndirectBranchingTargetAddress");
+        enckeyLoad = IRBBI.CreateXor(
+            IRBBI.CreateLoad(enckeyGV->getValueType(), enckeyGV), encenckey);
+        LI = IRBBI.CreateGEP(Int8Ty, gepptr, IRBBI.CreateSub(zero, enckeyLoad),
+                             "IndirectBranchingTargetAddress");
         SubstituteImpl::substituteXor(dyn_cast<BinaryOperator>(enckeyLoad));
       }
-      IndirectBrInst *indirBr =
-          IndirectBrInst::Create(IRB.CreateCall(valwrapfunc, {LI}), BBs.size());
+      IndirectBrInst *indirBr = IndirectBrInst::Create(
+          CallInst::Create(valwrapfunc, {LI}, "", BI), BBs.size());
       for (BasicBlock *BB : BBs)
         indirBr->addDestination(BB);
       ReplaceInstWithInst(BI, indirBr);

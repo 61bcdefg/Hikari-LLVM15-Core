@@ -18,25 +18,22 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/Value.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
-#include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Obfuscation/Obfuscation.h"
+#include "llvm/Transforms/Obfuscation/AntiHook.h"
+#include "llvm/Transforms/Obfuscation/CryptoUtils.h"
+#include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/CallSite.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include <cstdlib>
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <fstream>
-#include <iostream>
-#include <string>
 
 // Arm A64 Instruction Set for A-profile architecture 2022-12, Page 56
 #define AARCH64_SIGNATURE_B 0b000101
@@ -45,18 +42,18 @@
 // Arm A64 Instruction Set for A-profile architecture 2022-12, Page 79
 #define AARCH64_SIGNATURE_BRK 0b11010100001
 
-static cl::opt<string>
+using namespace llvm;
+
+static cl::opt<std::string>
     PreCompiledIRPath("adhexrirpath",
                       cl::desc("External Path Pointing To Pre-compiled Anti "
-                               "Hooking Handler IR.See Wiki"),
+                               "Hooking Handler IR"),
                       cl::value_desc("filename"), cl::init(""));
 static cl::opt<bool> AntiRebindSymbol("ah_antirebind",
                                       cl::desc("Make fishhook unavailable"),
                                       cl::value_desc("unavailable fishhook"),
                                       cl::init(false), cl::Optional);
 
-using namespace llvm;
-using namespace std;
 namespace llvm {
 struct AntiHook : public ModulePass {
   static char ID;
@@ -86,21 +83,21 @@ struct AntiHook : public ModulePass {
         PreCompiledIRPath = Path.c_str();
       }
     }
-    ifstream f(PreCompiledIRPath);
+    std::ifstream f(PreCompiledIRPath);
     if (f.good()) {
       errs() << "Linking PreCompiled AntiHooking IR From:" << PreCompiledIRPath
              << "\n";
       SMDiagnostic SMD;
-      unique_ptr<Module> ADBM(
+      std::unique_ptr<Module> ADBM(
           parseIRFile(StringRef(PreCompiledIRPath), SMD, M.getContext()));
       Linker::linkModules(M, std::move(ADBM), Linker::Flags::OverrideFromSrc);
     } else {
       errs() << "Failed To Link PreCompiled AntiHooking IR From:"
              << PreCompiledIRPath << "\n";
     }
-    opaquepointers = !M.getContext().supportsTypedPointers();
-    appleptrauth = hasApplePtrauth(&M);
-    triple = Triple(M.getTargetTriple());
+    this->opaquepointers = !M.getContext().supportsTypedPointers();
+    this->appleptrauth = hasApplePtrauth(&M);
+    this->triple = Triple(M.getTargetTriple());
     if (triple.getVendor() == Triple::VendorType::Apple) {
       for (GlobalVariable &GV : M.globals()) {
         if (GV.hasName() && GV.hasInitializer() &&
@@ -196,12 +193,12 @@ struct AntiHook : public ModulePass {
             ConstantDataSequential *SELNameCDS =
                 cast<ConstantDataSequential>(SELNameGV->getInitializer());
             bool classmethod = GV.getName().startswith("_OBJC_$_CLASS_METHODS");
-            string classname =
+            std::string classname =
                 GV.getName()
                     .substr(strlen(classmethod ? "_OBJC_$_CLASS_METHODS_"
                                                : "_OBJC_$_INSTANCE_METHODS_"))
                     .str();
-            string selname = SELNameCDS->getAsCString().str();
+            std::string selname = SELNameCDS->getAsCString().str();
             Function *IMPFunc = cast<Function>(
                 appleptrauth
                     ? opaquepointers
@@ -231,8 +228,7 @@ struct AntiHook : public ModulePass {
     BasicBlock *C = A->splitBasicBlock(A->getFirstNonPHIOrDbgOrLifetime());
     BasicBlock *B =
         BasicBlock::Create(F->getContext(), "HookDetectedHandler", F);
-    BasicBlock *Detect =
-        BasicBlock::Create(F->getContext(), "", F);
+    BasicBlock *Detect = BasicBlock::Create(F->getContext(), "", F);
     BasicBlock *Detect2 = BasicBlock::Create(F->getContext(), "", F);
     // Change A's terminator to jump to B
     // We'll add new terminator in B to jump C later
@@ -250,9 +246,11 @@ struct AntiHook : public ModulePass {
     Value *Load =
         IRBDetect.CreateLoad(Int32Ty, IRBDetect.CreateBitCast(F, Int32PtrTy));
     Value *LS2 = IRBDetect.CreateLShr(Load, ConstantInt::get(Int32Ty, 26));
-    Value *ICmpEQ2 = IRBDetect.CreateICmpEQ(LS2, ConstantInt::get(Int32Ty, AARCH64_SIGNATURE_B));
+    Value *ICmpEQ2 = IRBDetect.CreateICmpEQ(
+        LS2, ConstantInt::get(Int32Ty, AARCH64_SIGNATURE_B));
     Value *LS3 = IRBDetect.CreateLShr(Load, ConstantInt::get(Int32Ty, 21));
-    Value *ICmpEQ3 = IRBDetect.CreateICmpEQ(LS3, ConstantInt::get(Int32Ty, AARCH64_SIGNATURE_BRK));
+    Value *ICmpEQ3 = IRBDetect.CreateICmpEQ(
+        LS3, ConstantInt::get(Int32Ty, AARCH64_SIGNATURE_BRK));
     Value *Or = IRBDetect.CreateOr(ICmpEQ2, ICmpEQ3);
     IRBDetect.CreateCondBr(Or, B, Detect2);
 
@@ -274,8 +272,8 @@ struct AntiHook : public ModulePass {
     CreateCallbackAndJumpBack(&IRBB, C);
   }
 
-  void HandleObjcRuntimeHook(Function *ObjcMethodImp, string classname,
-                             string selname, bool classmethod) {
+  void HandleObjcRuntimeHook(Function *ObjcMethodImp, std::string classname,
+                             std::string selname, bool classmethod) {
     /*
     We split the originalBB A into:
        A < - RuntimeHook Detection
@@ -321,8 +319,9 @@ struct AntiHook : public ModulePass {
       IRBB->CreateCall(AHCallBack);
     } else {
       if (triple.isOSDarwin() && triple.isAArch64()) {
-        string exitsvcasm = "mov w16, #1\n";
-        exitsvcasm += "svc #" + to_string(cryptoutils->get_range(65536)) + "\n";
+        std::string exitsvcasm = "mov w16, #1\n";
+        exitsvcasm +=
+            "svc #" + std::to_string(cryptoutils->get_range(65536)) + "\n";
         InlineAsm *IA =
             InlineAsm::get(FunctionType::get(IRBB->getVoidTy(), false),
                            exitsvcasm, "", true, false);

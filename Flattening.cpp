@@ -1,11 +1,12 @@
 // For open-source license, please refer to
 // [License](https://github.com/HikariObfuscator/Hikari/wiki/License).
 //===----------------------------------------------------------------------===//
+#include "llvm/Transforms/Obfuscation/Flattening.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
-#include "llvm/Transforms/Obfuscation/Obfuscation.h"
+#include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/LegacyLowerSwitch.h"
-#include <fcntl.h>
+
 using namespace llvm;
 
 namespace {
@@ -39,8 +40,8 @@ bool Flattening::runOnFunction(Function &F) {
 }
 
 bool Flattening::flatten(Function *f) {
-  vector<BasicBlock *> origBB;
-  vector<BasicBlock *> exceptBB;
+  std::vector<BasicBlock *> origBB;
+  std::vector<BasicBlock *> exceptBB;
   BasicBlock *loopEntry;
   BasicBlock *loopEnd;
   LoadInst *load;
@@ -48,7 +49,7 @@ bool Flattening::flatten(Function *f) {
   AllocaInst *switchVar;
 
   // SCRAMBLER
-  map<uint32_t, uint32_t> scrambling_key;
+  std::map<uint32_t, uint32_t> scrambling_key;
   // END OF SCRAMBLER
 
   // Lower switch
@@ -109,10 +110,9 @@ bool Flattening::flatten(Function *f) {
   switchVar = new AllocaInst(Type::getInt32Ty(f->getContext()), 0, "switchVar",
                              oldTerm);
   oldTerm->eraseFromParent();
-  new StoreInst(
-      ConstantInt::get(Type::getInt32Ty(f->getContext()),
-                       llvm::cryptoutils->scramble32(0, scrambling_key)),
-      switchVar, insert);
+  new StoreInst(ConstantInt::get(Type::getInt32Ty(f->getContext()),
+                                 cryptoutils->scramble32(0, scrambling_key)),
+                switchVar, insert);
 
   // Create main loop
   loopEntry = BasicBlock::Create(f->getContext(), "loopEntry", f, insert);
@@ -151,7 +151,7 @@ bool Flattening::flatten(Function *f) {
     // Add case to switch
     numCase = cast<ConstantInt>(ConstantInt::get(
         switchI->getCondition()->getType(),
-        llvm::cryptoutils->scramble32(switchI->getNumCases(), scrambling_key)));
+        cryptoutils->scramble32(switchI->getNumCases(), scrambling_key)));
     switchI->addCase(numCase, i);
   }
 
@@ -166,8 +166,8 @@ bool Flattening::flatten(Function *f) {
       if (!numCase) {
         numCase = cast<ConstantInt>(
             ConstantInt::get(switchI->getCondition()->getType(),
-                             llvm::cryptoutils->scramble32(
-                                 switchI->getNumCases() - 1, scrambling_key)));
+                             cryptoutils->scramble32(switchI->getNumCases() - 1,
+                                                     scrambling_key)));
       }
       InvokeInst *II = dyn_cast<InvokeInst>(i->getTerminator());
       // Update switchVar and jump to the end of loop
@@ -194,8 +194,8 @@ bool Flattening::flatten(Function *f) {
       if (!numCase) {
         numCase = cast<ConstantInt>(
             ConstantInt::get(switchI->getCondition()->getType(),
-                             llvm::cryptoutils->scramble32(
-                                 switchI->getNumCases() - 1, scrambling_key)));
+                             cryptoutils->scramble32(switchI->getNumCases() - 1,
+                                                     scrambling_key)));
       }
 
       // Update switchVar and jump to the end of loop
@@ -216,15 +216,15 @@ bool Flattening::flatten(Function *f) {
       if (!numCaseTrue) {
         numCaseTrue = cast<ConstantInt>(
             ConstantInt::get(switchI->getCondition()->getType(),
-                             llvm::cryptoutils->scramble32(
-                                 switchI->getNumCases() - 1, scrambling_key)));
+                             cryptoutils->scramble32(switchI->getNumCases() - 1,
+                                                     scrambling_key)));
       }
 
       if (!numCaseFalse) {
         numCaseFalse = cast<ConstantInt>(
             ConstantInt::get(switchI->getCondition()->getType(),
-                             llvm::cryptoutils->scramble32(
-                                 switchI->getNumCases() - 1, scrambling_key)));
+                             cryptoutils->scramble32(switchI->getNumCases() - 1,
+                                                     scrambling_key)));
       }
 
       // Create a SelectInst

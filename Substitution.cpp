@@ -1,12 +1,16 @@
 // For open-source license, please refer to
 // [License](https://github.com/HikariObfuscator/Hikari/wiki/License).
 //===----------------------------------------------------------------------===//
+#include "llvm/Transforms/Obfuscation/Substitution.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/SubstituteImpl.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
+
+using namespace llvm;
 
 #define DEBUG_TYPE "substitution"
 
@@ -39,8 +43,88 @@ struct Substitution : public FunctionPass {
   Substitution(bool flag) : Substitution() { this->flag = flag; }
   Substitution() : FunctionPass(ID) { this->flag = true; }
 
-  bool runOnFunction(Function &F) override;
-  bool substitute(Function *f);
+  bool runOnFunction(Function &F) override {
+    // Check if the percentage is correct
+    if (ObfTimes <= 0) {
+      errs() << "Substitution application number -sub_loop=x must be x > 0";
+      return false;
+    }
+    if (ObfProbRate > 100) {
+      errs() << "InstructionSubstitution application instruction percentage "
+                "-sub_prob=x must be 0 < x <= 100";
+      return false;
+    }
+
+    Function *tmp = &F;
+    // Do we obfuscate
+    if (toObfuscate(flag, tmp, "sub")) {
+      errs() << "Running Instruction Substitution On " << F.getName() << "\n";
+      substitute(tmp);
+      return true;
+    }
+
+    return false;
+  };
+  bool substitute(Function *f) {
+    // Loop for the number of time we run the pass on the function
+    int times = ObfTimes;
+    do {
+      for (Instruction &inst : instructions(f))
+        if (inst.isBinaryOp() && cryptoutils->get_range(100) <= ObfProbRate) {
+          switch (inst.getOpcode()) {
+          case BinaryOperator::Add:
+            // case BinaryOperator::FAdd:
+            SubstituteImpl::substituteAdd(cast<BinaryOperator>(&inst));
+            ++Add;
+            break;
+          case BinaryOperator::Sub:
+            // case BinaryOperator::FSub:
+            SubstituteImpl::substituteSub(cast<BinaryOperator>(&inst));
+            ++Sub;
+            break;
+          case BinaryOperator::Mul:
+            // case BinaryOperator::FMul:
+            SubstituteImpl::substituteMul(cast<BinaryOperator>(&inst));
+            ++Mul;
+            break;
+          case BinaryOperator::UDiv:
+          case BinaryOperator::SDiv:
+          case BinaryOperator::FDiv:
+            //++Div;
+            break;
+          case BinaryOperator::URem:
+          case BinaryOperator::SRem:
+          case BinaryOperator::FRem:
+            //++Rem;
+            break;
+          case Instruction::Shl:
+            //++Shi;
+            break;
+          case Instruction::LShr:
+            //++Shi;
+            break;
+          case Instruction::AShr:
+            //++Shi;
+            break;
+          case Instruction::And:
+            SubstituteImpl::substituteAnd(cast<BinaryOperator>(&inst));
+            ++And;
+            break;
+          case Instruction::Or:
+            SubstituteImpl::substituteOr(cast<BinaryOperator>(&inst));
+            ++Or;
+            break;
+          case Instruction::Xor:
+            SubstituteImpl::substituteXor(cast<BinaryOperator>(&inst));
+            ++Xor;
+            break;
+          default:
+            break;
+          }            // End switch
+        }              // End isBinaryOp
+    } while (--times); // for times
+    return true;
+  }
 };
 } // namespace
 
@@ -49,87 +133,4 @@ INITIALIZE_PASS(Substitution, "subobf", "Enable Instruction Substitution.",
                 true, true)
 FunctionPass *llvm::createSubstitutionPass(bool flag) {
   return new Substitution(flag);
-}
-bool Substitution::runOnFunction(Function &F) {
-  // Check if the percentage is correct
-  if (ObfTimes <= 0) {
-    errs() << "Substitution application number -sub_loop=x must be x > 0";
-    return false;
-  }
-  if (ObfProbRate > 100) {
-    errs() << "InstructionSubstitution application instruction percentage "
-              "-sub_prob=x must be 0 < x <= 100";
-    return false;
-  }
-
-  Function *tmp = &F;
-  // Do we obfuscate
-  if (toObfuscate(flag, tmp, "sub")) {
-    errs() << "Running Instruction Substitution On " << F.getName() << "\n";
-    substitute(tmp);
-    return true;
-  }
-
-  return false;
-}
-
-bool Substitution::substitute(Function *f) {
-  // Loop for the number of time we run the pass on the function
-  int times = ObfTimes;
-  do {
-    for (Instruction &inst : instructions(f))
-      if (inst.isBinaryOp() && cryptoutils->get_range(100) <= ObfProbRate) {
-        switch (inst.getOpcode()) {
-        case BinaryOperator::Add:
-          // case BinaryOperator::FAdd:
-          SubstituteImpl::substituteAdd(cast<BinaryOperator>(&inst));
-          ++Add;
-          break;
-        case BinaryOperator::Sub:
-          // case BinaryOperator::FSub:
-          SubstituteImpl::substituteSub(cast<BinaryOperator>(&inst));
-          ++Sub;
-          break;
-        case BinaryOperator::Mul:
-          // case BinaryOperator::FMul:
-          SubstituteImpl::substituteMul(cast<BinaryOperator>(&inst));
-          ++Mul;
-          break;
-        case BinaryOperator::UDiv:
-        case BinaryOperator::SDiv:
-        case BinaryOperator::FDiv:
-          //++Div;
-          break;
-        case BinaryOperator::URem:
-        case BinaryOperator::SRem:
-        case BinaryOperator::FRem:
-          //++Rem;
-          break;
-        case Instruction::Shl:
-          //++Shi;
-          break;
-        case Instruction::LShr:
-          //++Shi;
-          break;
-        case Instruction::AShr:
-          //++Shi;
-          break;
-        case Instruction::And:
-          SubstituteImpl::substituteAnd(cast<BinaryOperator>(&inst));
-          ++And;
-          break;
-        case Instruction::Or:
-          SubstituteImpl::substituteOr(cast<BinaryOperator>(&inst));
-          ++Or;
-          break;
-        case Instruction::Xor:
-          SubstituteImpl::substituteXor(cast<BinaryOperator>(&inst));
-          ++Xor;
-          break;
-        default:
-          break;
-        }                // End switch
-      }                  // End isBinaryOp
-  } while (--times > 0); // for times
-  return true;
 }
