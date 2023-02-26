@@ -611,6 +611,13 @@ struct BogusControlFlow : public FunctionPass {
           FunctionType::get(Type::getVoidTy(alteredBB->getContext()), false),
           junk, "", true, false);
       CallInst::Create(IA, None, "", &*alteredBB->getFirstInsertionPt());
+      if (OnlyJunkAssembly) {
+        Function *F = basicBlock->getParent();
+        F->removeFnAttr(Attribute::AttrKind::MinSize);
+        F->removeFnAttr(Attribute::AttrKind::OptimizeForSize);
+        if (!F->hasFnAttribute(Attribute::AttrKind::OptimizeNone))
+          F->addFnAttr(Attribute::AttrKind::OptimizeNone);
+      }
     }
     return alteredBB;
   } // end of createAlteredBasicBlock()

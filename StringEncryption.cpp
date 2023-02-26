@@ -14,7 +14,7 @@
 using namespace llvm;
 
 static cl::opt<int>
-    ElementEncryptProb("strcry_prob", cl::init(75), cl::NotHidden,
+    ElementEncryptProb("strcry_prob", cl::init(100), cl::NotHidden,
                        cl::desc("Choose the probability [%] each element of "
                                 "ConstantDataSequential will be "
                                 "obfuscated by the -strcry pass"));
