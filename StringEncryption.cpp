@@ -230,12 +230,13 @@ struct StringEncryption : public ModulePass {
         continue;
       IntegerType *intType = cast<IntegerType>(ElementTy);
       Constant *KeyConst, *EncryptedConst, *DummyConst = nullptr;
+      unencryptedindex[GV] = {};
       if (intType == Type::getInt8Ty(M->getContext())) {
         std::vector<uint8_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
           if (cryptoutils->get_range(100) >= ElementEncryptProb) {
             unencryptedindex[GV].emplace_back(i);
-            keys.emplace_back(0);
+            keys.emplace_back(1);
             dummy.emplace_back(CDS->getElementAsInteger(i));
             continue;
           }
@@ -257,7 +258,7 @@ struct StringEncryption : public ModulePass {
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
           if (cryptoutils->get_range(100) >= ElementEncryptProb) {
             unencryptedindex[GV].emplace_back(i);
-            keys.emplace_back(0);
+            keys.emplace_back(1);
             dummy.emplace_back(CDS->getElementAsInteger(i));
             continue;
           }
@@ -278,7 +279,7 @@ struct StringEncryption : public ModulePass {
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
           if (cryptoutils->get_range(100) >= ElementEncryptProb) {
             unencryptedindex[GV].emplace_back(i);
-            keys.emplace_back(0);
+            keys.emplace_back(1);
             dummy.emplace_back(CDS->getElementAsInteger(i));
             continue;
           }
@@ -299,7 +300,7 @@ struct StringEncryption : public ModulePass {
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
           if (cryptoutils->get_range(100) >= ElementEncryptProb) {
             unencryptedindex[GV].emplace_back(i);
-            keys.emplace_back(0);
+            keys.emplace_back(1);
             dummy.emplace_back(CDS->getElementAsInteger(i));
             continue;
           }
