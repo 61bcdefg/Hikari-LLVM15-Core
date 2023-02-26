@@ -6,11 +6,18 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/NoFolder.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Obfuscation.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
 
 using namespace llvm;
+
+static cl::opt<int>
+    ElementEncryptProb("strcry_prob", cl::init(75), cl::NotHidden,
+                       cl::desc("Choose the probability [%] each element of "
+                                "ConstantDataSequential will be "
+                                "obfuscated by the -strcry pass"));
 
 namespace llvm {
 struct StringEncryption : public ModulePass {
@@ -20,6 +27,7 @@ struct StringEncryption : public ModulePass {
   std::map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
       encstatus;
   std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> mgv2keys;
+  std::map<Constant *, std::vector<unsigned int>> unencryptedindex;
   std::vector<GlobalVariable *> genedgv;
   StringEncryption() : ModulePass(ID) { this->flag = true; }
 
@@ -68,6 +76,14 @@ struct StringEncryption : public ModulePass {
     // in runOnModule. We simple iterate function list and dispatch functions
     // to handlers
     this->opaquepointers = !M.getContext().supportsTypedPointers();
+
+    // Check if the number of applications is correct
+    if (!((ElementEncryptProb > 0) && (ElementEncryptProb <= 100))) {
+      errs() << "StringEncryption application element percentage "
+                "-strcry_prob=x must be 0 < x <= 100";
+      return false;
+    }
+
     for (Function &F : M)
       if (toObfuscate(flag, &F, "strenc")) {
         errs() << "Running StringEncryption On " << F.getName() << "\n";
@@ -209,15 +225,20 @@ struct StringEncryption : public ModulePass {
         continue;
       ConstantDataSequential *CDS =
           cast<ConstantDataSequential>(GV->getInitializer());
-      Type *memberType = CDS->getElementType();
-      // Ignore non-IntegerType
-      if (!isa<IntegerType>(memberType))
+      Type *ElementTy = CDS->getElementType();
+      if (!ElementTy->isIntegerTy())
         continue;
-      IntegerType *intType = cast<IntegerType>(memberType);
+      IntegerType *intType = cast<IntegerType>(ElementTy);
       Constant *KeyConst, *EncryptedConst, *DummyConst = nullptr;
       if (intType == Type::getInt8Ty(M->getContext())) {
         std::vector<uint8_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
+          if (cryptoutils->get_range(100) >= ElementEncryptProb) {
+            unencryptedindex[GV].emplace_back(i);
+            keys.emplace_back(0);
+            dummy.emplace_back(CDS->getElementAsInteger(i));
+            continue;
+          }
           const uint8_t K = cryptoutils->get_uint8_t();
           const uint64_t V = CDS->getElementAsInteger(i);
           keys.emplace_back(K);
@@ -234,6 +255,12 @@ struct StringEncryption : public ModulePass {
       } else if (intType == Type::getInt16Ty(M->getContext())) {
         std::vector<uint16_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
+          if (cryptoutils->get_range(100) >= ElementEncryptProb) {
+            unencryptedindex[GV].emplace_back(i);
+            keys.emplace_back(0);
+            dummy.emplace_back(CDS->getElementAsInteger(i));
+            continue;
+          }
           const uint16_t K = cryptoutils->get_uint16_t();
           const uint64_t V = CDS->getElementAsInteger(i);
           keys.emplace_back(K);
@@ -249,6 +276,12 @@ struct StringEncryption : public ModulePass {
       } else if (intType == Type::getInt32Ty(M->getContext())) {
         std::vector<uint32_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
+          if (cryptoutils->get_range(100) >= ElementEncryptProb) {
+            unencryptedindex[GV].emplace_back(i);
+            keys.emplace_back(0);
+            dummy.emplace_back(CDS->getElementAsInteger(i));
+            continue;
+          }
           const uint32_t K = cryptoutils->get_uint32_t();
           const uint64_t V = CDS->getElementAsInteger(i);
           keys.emplace_back(K);
@@ -264,6 +297,12 @@ struct StringEncryption : public ModulePass {
       } else if (intType == Type::getInt64Ty(M->getContext())) {
         std::vector<uint64_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
+          if (cryptoutils->get_range(100) >= ElementEncryptProb) {
+            unencryptedindex[GV].emplace_back(i);
+            keys.emplace_back(0);
+            dummy.emplace_back(CDS->getElementAsInteger(i));
+            continue;
+          }
           const uint64_t K = cryptoutils->get_uint64_t();
           const uint64_t V = CDS->getElementAsInteger(i);
           keys.emplace_back(K);
@@ -293,6 +332,7 @@ struct StringEncryption : public ModulePass {
       old2new[GV] = std::make_pair(EncryptedRawGV, DecryptSpaceGV);
       GV2Keys[DecryptSpaceGV] = std::make_pair(KeyConst, EncryptedRawGV);
       mgv2keys[DecryptSpaceGV] = GV2Keys[DecryptSpaceGV];
+      unencryptedindex[KeyConst] = unencryptedindex[GV];
     }
     // Now prepare ObjC new GV
     for (GlobalVariable *GV : objCStrings) {
@@ -446,30 +486,39 @@ struct StringEncryption : public ModulePass {
       BasicBlock *B, BasicBlock *C,
       std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>>
           &GV2Keys) {
-    IRBuilder<> IRB(B);
+    IRBuilder<NoFolder> IRB(B);
     Value *zero = ConstantInt::get(Type::getInt32Ty(B->getContext()), 0);
     for (std::map<GlobalVariable *,
                   std::pair<Constant *, GlobalVariable *>>::iterator iter =
              GV2Keys.begin();
          iter != GV2Keys.end(); ++iter) {
-      ConstantDataArray *CastedCDA =
-          cast<ConstantDataArray>(iter->second.first);
+      Constant *KeyConst = iter->second.first;
+      ConstantDataArray *CastedCDA = cast<ConstantDataArray>(KeyConst);
       // Prevent optimization of encrypted data
       appendToCompilerUsed(*iter->second.second->getParent(),
                            {iter->second.second});
       // Element-By-Element XOR so the fucking verifier won't complain
       // Also, this hides keys
+      uint64_t realkeyoff = 0;
       for (uint64_t i = 0; i < CastedCDA->getType()->getNumElements(); i++) {
-        Value *offset = ConstantInt::get(Type::getInt64Ty(B->getContext()), i);
+        if (unencryptedindex[KeyConst].size() &&
+            std::find(unencryptedindex[KeyConst].begin(),
+                      unencryptedindex[KeyConst].end(),
+                      i) != unencryptedindex[KeyConst].end())
+          continue;
+        Value *offset =
+            ConstantInt::get(Type::getInt64Ty(B->getContext()), realkeyoff);
+        Value *offset2 = ConstantInt::get(Type::getInt64Ty(B->getContext()), i);
         Value *EncryptedGEP =
             IRB.CreateGEP(iter->second.second->getValueType(),
                           iter->second.second, {zero, offset});
         Value *DecryptedGEP = IRB.CreateGEP(iter->first->getValueType(),
-                                            iter->first, {zero, offset});
+                                            iter->first, {zero, offset2});
         LoadInst *LI = IRB.CreateLoad(CastedCDA->getElementType(), EncryptedGEP,
                                       "EncryptedChar");
         Value *XORed = IRB.CreateXor(LI, CastedCDA->getElementAsConstant(i));
         IRB.CreateStore(XORed, DecryptedGEP);
+        realkeyoff++;
       }
     }
     IRB.CreateBr(C);
