@@ -25,6 +25,7 @@
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <deque>
+#include <map>
 
 using namespace llvm;
 
