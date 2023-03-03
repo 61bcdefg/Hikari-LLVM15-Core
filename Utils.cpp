@@ -319,4 +319,11 @@ bool toObfuscate(bool flag, Function *f, std::string attribute) {
   return flag;
 }
 
+void turnOffOptimization(Function *f) {
+  f->removeFnAttr(Attribute::AttrKind::MinSize);
+  f->removeFnAttr(Attribute::AttrKind::OptimizeForSize);
+  if (!f->hasFnAttribute(Attribute::AttrKind::OptimizeNone))
+    f->addFnAttr(Attribute::AttrKind::OptimizeNone);
+}
+
 } // namespace llvm
