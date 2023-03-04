@@ -49,10 +49,18 @@ static cl::opt<std::string>
                       cl::desc("External Path Pointing To Pre-compiled Anti "
                                "Hooking Handler IR"),
                       cl::value_desc("filename"), cl::init(""));
-static cl::opt<bool> AntiRebindSymbol("ah_antirebind",
-                                      cl::desc("Make fishhook unavailable"),
-                                      cl::value_desc("unavailable fishhook"),
-                                      cl::init(false), cl::Optional);
+
+static cl::opt<bool> CheckInlineHook("ah_inline", cl::init(true),
+                                     cl::NotHidden,
+                                     cl::desc("Check Inline Hook for AArch64"));
+
+static cl::opt<bool>
+    CheckObjectiveCRuntimeHook("ah_objcruntime", cl::init(true), cl::NotHidden,
+                               cl::desc("Check Objective-C Runtime Hook"));
+
+static cl::opt<bool> AntiRebindSymbol("ah_antirebind", cl::init(false),
+                                      cl::NotHidden,
+                                      cl::desc("Make fishhook unavailable"));
 
 namespace llvm {
 struct AntiHook : public ModulePass {
@@ -98,7 +106,8 @@ struct AntiHook : public ModulePass {
     this->opaquepointers = !M.getContext().supportsTypedPointers();
     this->appleptrauth = hasApplePtrauth(&M);
     this->triple = Triple(M.getTargetTriple());
-    if (triple.getVendor() == Triple::VendorType::Apple) {
+    if (triple.getVendor() == Triple::VendorType::Apple &&
+        CheckObjectiveCRuntimeHook) {
       for (GlobalVariable &GV : M.globals()) {
         if (GV.hasName() && GV.hasInitializer() &&
             (GV.getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
@@ -140,7 +149,7 @@ struct AntiHook : public ModulePass {
     for (Function &F : M) {
       if (toObfuscate(flag, &F, "antihook")) {
         errs() << "Running AntiHooking On " << F.getName() << "\n";
-        if (triple.isAArch64()) {
+        if (triple.isAArch64() && CheckInlineHook) {
           HandleInlineHookAArch64(&F);
         }
         if (AntiRebindSymbol)
