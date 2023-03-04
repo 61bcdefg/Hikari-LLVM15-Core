@@ -111,6 +111,8 @@ struct Obfuscation : public ModulePass {
     Timer *timer = new Timer("Obfuscation Timer", "Obfuscation Timer", *tg);
     timer->startTimer();
 
+    errs() << "Running Hikari On " << M.getSourceFileName() << "\n";
+
     ModulePass *MP = createAntiHookPass(EnableAntiHooking);
     MP->doInitialization(M);
     MP->runOnModule(M);
