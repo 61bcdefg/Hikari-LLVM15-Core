@@ -56,7 +56,7 @@ struct ConstantEncryption : public ModulePass {
   bool flag;
   ConstantEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
   ConstantEncryption() : ModulePass(ID) { this->flag = true; }
-  bool canEncryptConstant(Instruction *I) {
+  bool shouldEncryptConstant(Instruction *I) {
     if (isa<IntrinsicInst>(I) || isa<GetElementPtrInst>(I) || isa<PHINode>(I) ||
         I->isAtomic())
       return false;
@@ -76,7 +76,7 @@ struct ConstantEncryption : public ModulePass {
         int times = ObfTimes;
         while (times) {
           for (Instruction &I : instructions(F)) {
-            if (!canEncryptConstant(&I))
+            if (!shouldEncryptConstant(&I))
               continue;
             for (unsigned i = 0; i < I.getNumOperands(); i++) {
               if (isa<SwitchInst>(&I) && i != 0)
@@ -94,7 +94,7 @@ struct ConstantEncryption : public ModulePass {
           }
           if (ConstToGV)
             for (Instruction &I : instructions(F)) {
-              if (!canEncryptConstant(&I))
+              if (!shouldEncryptConstant(&I))
                 continue;
               for (unsigned int i = 0; i < I.getNumOperands(); i++)
                 if (ConstantInt *CI = dyn_cast<ConstantInt>(I.getOperand(i))) {
@@ -130,15 +130,15 @@ struct ConstantEncryption : public ModulePass {
       if (LoadInst *LI = dyn_cast<LoadInst>(U)) {
         XORInst = BinaryOperator::Create(Instruction::Xor, LI, XORKey);
         XORInst->insertAfter(LI);
-        LI->replaceAllUsesWith(XORInst);
-        XORInst->setOperand(0, LI);
+        LI->replaceUsesWithIf(
+            XORInst, [XORInst](Use &U) { return U.getUser() != XORInst; });
       } else if (StoreInst *SI = dyn_cast<StoreInst>(U)) {
-        XORInst =
-            BinaryOperator::Create(Instruction::Xor, SI->getOperand(0), XORKey);
-        XORInst->insertAfter(SI);
-        SI->replaceUsesOfWith(SI->getOperand(0), XORInst);
+        XORInst = BinaryOperator::Create(Instruction::Xor, SI->getOperand(0),
+                                         XORKey, "", SI);
+        SI->getOperand(0)->replaceUsesWithIf(
+            XORInst, [XORInst](Use &U) { return U.getUser() != XORInst; });
       }
-      if (SubstituteXor)
+      if (XORInst && SubstituteXor)
         SubstituteImpl::substituteXor(XORInst);
     }
   }
