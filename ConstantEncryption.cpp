@@ -17,11 +17,12 @@
 */
 #include "llvm/Transforms/Obfuscation/ConstantEncryption.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/Value.h"
+#include "llvm/IR/NoFolder.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/SubstituteImpl.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
@@ -54,6 +55,7 @@ namespace llvm {
 struct ConstantEncryption : public ModulePass {
   static char ID;
   bool flag;
+  std::vector<BinaryOperator *> obfedbos;
   ConstantEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
   ConstantEncryption() : ModulePass(ID) { this->flag = true; }
   bool shouldEncryptConstant(Instruction *I) {
@@ -70,6 +72,7 @@ struct ConstantEncryption : public ModulePass {
                 "-constenc_prob=x must be 0 < x <= 100";
       return false;
     }
+    const DataLayout &DL = M.getDataLayout();
     for (Function &F : M)
       if (toObfuscate(flag, &F, "constenc") && !F.isPresplitCoroutine()) {
         errs() << "Running ConstantEncryption On " << F.getName() << "\n";
@@ -92,7 +95,8 @@ struct ConstantEncryption : public ModulePass {
                   HandleConstantIntInitializerGV(G);
             }
           }
-          if (ConstToGV)
+          if (ConstToGV) {
+            std::vector<Instruction *> ins;
             for (Instruction &I : instructions(F)) {
               if (!shouldEncryptConstant(&I))
                 continue;
@@ -108,7 +112,44 @@ struct ConstantEncryption : public ModulePass {
                   appendToCompilerUsed(M, GV);
                   I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
                 }
+              ins.emplace_back(&I);
             }
+            for (Instruction *I : ins) {
+              if (BinaryOperator *BO = dyn_cast<BinaryOperator>(I)) {
+                if (!BO->getType()->isIntegerTy())
+                  continue;
+                if (std::find(obfedbos.begin(), obfedbos.end(), BO) !=
+                    obfedbos.end())
+                  continue;
+                IntegerType *IT = cast<IntegerType>(BO->getType());
+                uint64_t dummy = 0;
+                if (IT->getBitWidth() == 8)
+                  dummy = cryptoutils->get_uint8_t();
+                else if (IT->getBitWidth() == 16)
+                  dummy = cryptoutils->get_uint16_t();
+                else if (IT->getBitWidth() == 32)
+                  dummy = cryptoutils->get_uint32_t();
+                else if (IT->getBitWidth() == 64)
+                  dummy = cryptoutils->get_uint64_t();
+                else if (IT->getBitWidth() != 0)
+                  continue;
+                GlobalVariable *GV = new GlobalVariable(
+                    M, BO->getType(), false,
+                    GlobalValue::LinkageTypes::PrivateLinkage,
+                    ConstantInt::get(BO->getType(), dummy),
+                    "ConstantEncryptionBOStore");
+                StoreInst *SI = new StoreInst(
+                    BO, GV, false, DL.getABITypeAlign(BO->getType()));
+                SI->insertAfter(BO);
+                LoadInst *LI = new LoadInst(GV->getValueType(), GV, "", false,
+                                            DL.getABITypeAlign(BO->getType()));
+                LI->insertAfter(SI);
+                BO->replaceUsesWithIf(
+                    LI, [SI](Use &U) { return U.getUser() != SI; });
+                obfedbos.emplace_back(BO);
+              }
+            }
+          }
           times--;
         }
       }
