@@ -664,7 +664,7 @@ struct BogusControlFlow : public FunctionPass {
             BasicBlock::Create(opFunction->getContext(), "", opFunction);
         // Insert a br to make it can be obfuscated by IndirectBranch
         BranchInst::Create(opEntryBlock, opTrampBlock);
-        writeAnnotation(opFunction, "bcfopfunc");
+        writeAnnotate(opFunction, "bcfopfunc");
         IRBOp = new IRBuilder<>(opEntryBlock);
       }
       Instruction *tmp = &*(i->getParent()->getFirstNonPHIOrDbgOrLifetime());

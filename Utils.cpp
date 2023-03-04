@@ -15,7 +15,7 @@ using namespace llvm;
 namespace llvm {
 
 // Shamefully borrowed from ../Scalar/RegToMem.cpp and .../IR/Instruction.cpp :(
-bool valueEscapes(Instruction *Inst) {
+static bool valueEscapes(Instruction *Inst) {
   for (User *U : Inst->users()) {
     Instruction *I = cast<Instruction>(U);
     if (I->getParent() != Inst->getParent()) {
@@ -31,71 +31,6 @@ bool valueEscapes(Instruction *Inst) {
   }
   return false;
 }
-bool hasApplePtrauth(Module *M) {
-  for (GlobalVariable &GV : M->globals())
-    if (GV.getSection() == "llvm.ptrauth")
-      return true;
-  return false;
-}
-
-void FixFunctionConstantExpr(Function *Func) {
-  // Replace ConstantExpr with equal instructions
-  // Otherwise replacing on Constant will crash the compiler
-  for (BasicBlock &BB : *Func)
-    FixBasicBlockConstantExpr(&BB);
-}
-void FixBasicBlockConstantExpr(BasicBlock *BB) {
-  // Replace ConstantExpr with equal instructions
-  // Otherwise replacing on Constant will crash the compiler
-  // Things to note:
-  // - Phis must be placed at BB start so CEs must be placed prior to current BB
-  assert(!BB->empty() && "BasicBlock is empty!");
-  assert(BB->getParent() && "BasicBlock must be in a Function!");
-  Instruction *FunctionInsertPt =
-      &*(BB->getParent()->getEntryBlock().getFirstInsertionPt());
-
-  for (Instruction &I : *BB) {
-    if (isa<LandingPadInst>(I) || isa<FuncletPadInst>(I) ||
-        isa<IntrinsicInst>(I))
-      continue;
-    for (unsigned int i = 0; i < I.getNumOperands(); i++)
-      if (ConstantExpr *C = dyn_cast<ConstantExpr>(I.getOperand(i))) {
-        IRBuilder<NoFolder> IRB(&I);
-        if (isa<PHINode>(I))
-          IRB.SetInsertPoint(FunctionInsertPt);
-        Instruction *Inst = IRB.Insert(C->getAsInstruction());
-        I.setOperand(i, Inst);
-      }
-  }
-}
-
-#if 0
-std::map<GlobalValue *, StringRef> BuildAnnotateMap(Module &M) {
-  std::map<GlobalValue *, StringRef> VAMap;
-  GlobalVariable *glob = M.getGlobalVariable("llvm.global.annotations");
-  if (glob != nullptr && glob->hasInitializer()) {
-    ConstantArray *CDA = cast<ConstantArray>(glob->getInitializer());
-    for (Value *op : CDA->operands()) {
-      ConstantStruct *anStruct = cast<ConstantStruct>(op);
-      /*
-        Structure: [Value,Annotation,SourceFilePath,LineNumber]
-        Usually wrapped inside GEP/BitCast
-        We only care about Value and Annotation Here
-      */
-      GlobalValue *Value =
-          cast<GlobalValue>(anStruct->getOperand(0)->getOperand(0));
-      GlobalVariable *Annotation =
-          cast<GlobalVariable>(anStruct->getOperand(1)->getOperand(0));
-      if (Annotation->hasInitializer()) {
-        VAMap[Value] =
-            cast<ConstantDataSequential>(Annotation->getInitializer())
-                ->getAsCString();
-      }
-    }
-  }
-  return VAMap;
-}
-#endif
 
 void fixStack(Function *f) {
   // Try to remove phi node and demote reg to stack
@@ -133,41 +68,6 @@ void fixStack(Function *f) {
     for (PHINode *P : tmpPhi)
       DemotePHIToStack(P, AllocaInsertionPoint);
   } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
-}
-
-static GlobalVariable *createAnnoStringGV(Module *M, StringRef Str) {
-  Constant *s = ConstantDataArray::getString(M->getContext(), Str);
-  GlobalVariable *GV = new GlobalVariable(
-      *M, s->getType(), true, llvm::GlobalValue::PrivateLinkage, s, ".str");
-  GV->setSection("llvm.metadata");
-  GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  return GV;
-}
-
-static Constant *createNewCSForAnnotationWithAppendedStr(
-    Function *f, std::vector<Constant *> &Annotations, std::string str) {
-  PointerType *GlobalsInt8PtrTy =
-      Type::getInt8Ty(f->getParent()->getContext())
-          ->getPointerTo(
-              f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace());
-  Constant *GVInGlobalsAS = f;
-  if (f->getAddressSpace() !=
-      f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace())
-    GVInGlobalsAS = llvm::ConstantExpr::getAddrSpaceCast(
-        f,
-        f->getValueType()->getPointerTo(
-            f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace()));
-  Constant *Fields[] = {
-      ConstantExpr::getBitCast(GVInGlobalsAS, GlobalsInt8PtrTy),
-      ConstantExpr::getBitCast(createAnnoStringGV(f->getParent(), str),
-                               GlobalsInt8PtrTy),
-      ConstantExpr::getBitCast(
-          createAnnoStringGV(f->getParent(),
-                             f->getParent()->getSourceFileName()),
-          GlobalsInt8PtrTy),
-      ConstantInt::get(Type::getInt32Ty(f->getParent()->getContext()), 0),
-      ConstantPointerNull::get(GlobalsInt8PtrTy)};
-  return ConstantStruct::getAnon(Fields);
 }
 
 std::string readAnnotate(Function *f) {
@@ -213,7 +113,125 @@ std::string readAnnotate(Function *f) {
   return annotation;
 }
 
-void writeAnnotation(Function *f, std::string annotation) {
+// Unlike O-LLVM which uses __attribute__ that is not supported by the ObjC
+// CFE. We use a dummy call here and remove the call later Very dumb and
+// definitely slower than the function attribute method Merely a hack
+static bool readFlag(Function *f, std::string attribute) {
+  for (Instruction &I : instructions(f)) {
+    Instruction *Inst = &I;
+    if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
+      if (CI->getCalledFunction() != nullptr &&
+          CI->getCalledFunction()->getName().contains("hikari_" + attribute)) {
+        CI->eraseFromParent();
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool toObfuscate(bool flag, Function *f, std::string attribute) {
+  // Check if declaration and external linkage
+  if (f->isDeclaration() || f->hasAvailableExternallyLinkage()) {
+    return false;
+  }
+  std::string attr = attribute;
+  std::string attrNo = "no" + attr;
+  // We have to check the nofla flag first
+  // Because .find("fla") is true for a string like "fla" or
+  // "nofla"
+  if (readAnnotate(f).find(attrNo) != std::string::npos ||
+      readFlag(f, attrNo)) {
+    return false;
+  }
+  if (readAnnotate(f).find(attr) != std::string::npos || readFlag(f, attr)) {
+    return true;
+  }
+  return flag;
+}
+
+bool hasApplePtrauth(Module *M) {
+  for (GlobalVariable &GV : M->globals())
+    if (GV.getSection() == "llvm.ptrauth")
+      return true;
+  return false;
+}
+
+static void FixBasicBlockConstantExpr(BasicBlock *BB) {
+  // Replace ConstantExpr with equal instructions
+  // Otherwise replacing on Constant will crash the compiler
+  // Things to note:
+  // - Phis must be placed at BB start so CEs must be placed prior to current BB
+  assert(!BB->empty() && "BasicBlock is empty!");
+  assert(BB->getParent() && "BasicBlock must be in a Function!");
+  Instruction *FunctionInsertPt =
+      &*(BB->getParent()->getEntryBlock().getFirstInsertionPt());
+
+  for (Instruction &I : *BB) {
+    if (isa<LandingPadInst>(I) || isa<FuncletPadInst>(I) ||
+        isa<IntrinsicInst>(I))
+      continue;
+    for (unsigned int i = 0; i < I.getNumOperands(); i++)
+      if (ConstantExpr *C = dyn_cast<ConstantExpr>(I.getOperand(i))) {
+        IRBuilder<NoFolder> IRB(&I);
+        if (isa<PHINode>(I))
+          IRB.SetInsertPoint(FunctionInsertPt);
+        Instruction *Inst = IRB.Insert(C->getAsInstruction());
+        I.setOperand(i, Inst);
+      }
+  }
+}
+
+void FixFunctionConstantExpr(Function *Func) {
+  // Replace ConstantExpr with equal instructions
+  // Otherwise replacing on Constant will crash the compiler
+  for (BasicBlock &BB : *Func)
+    FixBasicBlockConstantExpr(&BB);
+}
+
+void turnOffOptimization(Function *f) {
+  f->removeFnAttr(Attribute::AttrKind::MinSize);
+  f->removeFnAttr(Attribute::AttrKind::OptimizeForSize);
+  if (!f->hasFnAttribute(Attribute::AttrKind::OptimizeNone))
+    f->addFnAttr(Attribute::AttrKind::OptimizeNone);
+}
+
+static GlobalVariable *createAnnoStringGV(Module *M, StringRef Str) {
+  Constant *s = ConstantDataArray::getString(M->getContext(), Str);
+  GlobalVariable *GV = new GlobalVariable(
+      *M, s->getType(), true, llvm::GlobalValue::PrivateLinkage, s, ".str");
+  GV->setSection("llvm.metadata");
+  GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  return GV;
+}
+
+static Constant *createNewCSForAnnotationWithAppendedStr(
+    Function *f, std::vector<Constant *> &Annotations, std::string str) {
+  PointerType *GlobalsInt8PtrTy =
+      Type::getInt8Ty(f->getParent()->getContext())
+          ->getPointerTo(
+              f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace());
+  Constant *GVInGlobalsAS = f;
+  if (f->getAddressSpace() !=
+      f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace())
+    GVInGlobalsAS = llvm::ConstantExpr::getAddrSpaceCast(
+        f,
+        f->getValueType()->getPointerTo(
+            f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace()));
+  Constant *Fields[] = {
+      ConstantExpr::getBitCast(GVInGlobalsAS, GlobalsInt8PtrTy),
+      ConstantExpr::getBitCast(createAnnoStringGV(f->getParent(), str),
+                               GlobalsInt8PtrTy),
+      ConstantExpr::getBitCast(
+          createAnnoStringGV(f->getParent(),
+                             f->getParent()->getSourceFileName()),
+          GlobalsInt8PtrTy),
+      ConstantInt::get(Type::getInt32Ty(f->getParent()->getContext()), 0),
+      ConstantPointerNull::get(GlobalsInt8PtrTy)};
+  return ConstantStruct::getAnon(Fields);
+}
+
+void writeAnnotate(Function *f, std::string annotation) {
   Module *M = f->getParent();
   GlobalVariable *glob = M->getGlobalVariable("llvm.global.annotations");
   if (glob) {
@@ -283,47 +301,32 @@ void writeAnnotation(Function *f, std::string annotation) {
   }
 }
 
-// Unlike O-LLVM which uses __attribute__ that is not supported by the ObjC
-// CFE. We use a dummy call here and remove the call later Very dumb and
-// definitely slower than the function attribute method Merely a hack
-bool readFlag(Function *f, std::string attribute) {
-  for (Instruction &I : instructions(f)) {
-    Instruction *Inst = &I;
-    if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
-      if (CI->getCalledFunction() != nullptr &&
-          CI->getCalledFunction()->getName().contains("hikari_" + attribute)) {
-        CI->eraseFromParent();
-        return true;
+#if 0
+std::map<GlobalValue *, StringRef> BuildAnnotateMap(Module &M) {
+  std::map<GlobalValue *, StringRef> VAMap;
+  GlobalVariable *glob = M.getGlobalVariable("llvm.global.annotations");
+  if (glob != nullptr && glob->hasInitializer()) {
+    ConstantArray *CDA = cast<ConstantArray>(glob->getInitializer());
+    for (Value *op : CDA->operands()) {
+      ConstantStruct *anStruct = cast<ConstantStruct>(op);
+      /*
+        Structure: [Value,Annotation,SourceFilePath,LineNumber]
+        Usually wrapped inside GEP/BitCast
+        We only care about Value and Annotation Here
+      */
+      GlobalValue *Value =
+          cast<GlobalValue>(anStruct->getOperand(0)->getOperand(0));
+      GlobalVariable *Annotation =
+          cast<GlobalVariable>(anStruct->getOperand(1)->getOperand(0));
+      if (Annotation->hasInitializer()) {
+        VAMap[Value] =
+            cast<ConstantDataSequential>(Annotation->getInitializer())
+                ->getAsCString();
       }
     }
   }
-  return false;
+  return VAMap;
 }
-bool toObfuscate(bool flag, Function *f, std::string attribute) {
-  // Check if declaration and external linkage
-  if (f->isDeclaration() || f->hasAvailableExternallyLinkage()) {
-    return false;
-  }
-  std::string attr = attribute;
-  std::string attrNo = "no" + attr;
-  // We have to check the nofla flag first
-  // Because .find("fla") is true for a string like "fla" or
-  // "nofla"
-  if (readAnnotate(f).find(attrNo) != std::string::npos ||
-      readFlag(f, attrNo)) {
-    return false;
-  }
-  if (readAnnotate(f).find(attr) != std::string::npos || readFlag(f, attr)) {
-    return true;
-  }
-  return flag;
-}
-
-void turnOffOptimization(Function *f) {
-  f->removeFnAttr(Attribute::AttrKind::MinSize);
-  f->removeFnAttr(Attribute::AttrKind::OptimizeForSize);
-  if (!f->hasFnAttribute(Attribute::AttrKind::OptimizeNone))
-    f->addFnAttr(Attribute::AttrKind::OptimizeNone);
-}
+#endif
 
 } // namespace llvm
