@@ -2,10 +2,10 @@
 // [License](https://github.com/HikariObfuscator/Hikari/wiki/License).
 //===----------------------------------------------------------------------===//
 #include "llvm/Transforms/Obfuscation/Flattening.h"
-#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
-#include "llvm/Transforms/Obfuscation/compat/LegacyLowerSwitch.h"
 
 using namespace llvm;
 
@@ -41,9 +41,7 @@ bool Flattening::runOnFunction(Function &F) {
 
 bool Flattening::flatten(Function *f) {
   std::vector<BasicBlock *> origBB;
-  std::vector<BasicBlock *> exceptBB;
-  BasicBlock *loopEntry;
-  BasicBlock *loopEnd;
+  BasicBlock *loopEntry, *loopEnd;
   LoadInst *load;
   SwitchInst *switchI;
   AllocaInst *switchVar;
@@ -52,28 +50,8 @@ bool Flattening::flatten(Function *f) {
   std::map<uint32_t, uint32_t> scrambling_key;
   // END OF SCRAMBLER
 
-  // Lower switch
-  createLegacyLowerSwitchPass()->runOnFunction(*f);
-
   for (BasicBlock &BB : *f)
-    if (BB.isLandingPad()) {
-      exceptBB.emplace_back(&BB);
-      for (unsigned int i = 0; i < BB.getTerminator()->getNumSuccessors(); i++)
-        exceptBB.emplace_back(BB.getTerminator()->getSuccessor(i));
-    }
-
-  // Save all non exepcetion handle original BB
-  for (BasicBlock &BB : *f) {
-    if (std::find(exceptBB.begin(), exceptBB.end(), &BB) == exceptBB.end())
-      origBB.emplace_back(&BB);
-
-    if (!isa<BranchInst>(BB.getTerminator()) &&
-        !isa<ReturnInst>(BB.getTerminator()) &&
-        !isa<InvokeInst>(BB.getTerminator()) &&
-        !isa<ResumeInst>(BB.getTerminator()) &&
-        !isa<UnreachableInst>(BB.getTerminator()))
-      return false;
-  }
+    origBB.emplace_back(&BB);
 
   // Nothing to flatten
   if (origBB.size() <= 1)
@@ -83,22 +61,22 @@ bool Flattening::flatten(Function *f) {
   origBB.erase(origBB.begin());
 
   // Get a pointer on the first BB
-  Function::iterator tmp = f->begin(); //++tmp;
-  BasicBlock *insert = &*tmp;
+  BasicBlock *insert = &*f->begin();
 
-  // If main begin with an if or throw
-  Instruction *br = nullptr;
-  if (isa<BranchInst>(insert->getTerminator()) ||
-      isa<InvokeInst>(insert->getTerminator()))
-    br = insert->getTerminator();
+  if (!(isa<BranchInst>(insert->getTerminator()) ||
+        isa<ReturnInst>(insert->getTerminator()))) {
+    BasicBlock *newEntry =
+        BasicBlock::Create(f->getContext(), "", f, &*f->begin());
+    BranchInst::Create(insert, newEntry);
+    origBB.insert(origBB.begin(), newEntry);
+    insert = newEntry;
+  }
 
-  if (br) { // https://github.com/eshard/obfuscator-llvm/commit/af789724563ff3d300317fe4a9a9b0f3a88007eb
+  if (isa<BranchInst>(insert->getTerminator())) {
     BasicBlock::iterator i = insert->end();
     --i;
-
     if (insert->size() > 1)
       --i;
-
     BasicBlock *tmpBB = insert->splitBasicBlock(i, "first");
     origBB.insert(origBB.begin(), tmpBB);
   }
@@ -136,12 +114,7 @@ bool Flattening::flatten(Function *f) {
   switchI = SwitchInst::Create(&*f->begin(), swDefault, 0, loopEntry);
   switchI->setCondition(load);
 
-  // Remove branch jump from 1st BB and make a jump to the while
-  f->begin()->getTerminator()->eraseFromParent();
-
-  BranchInst::Create(loopEntry, &*f->begin());
-
-  // Put all BB in the switch
+  // Put BB in the switch
   for (BasicBlock *i : origBB) {
     ConstantInt *numCase = nullptr;
 
@@ -157,29 +130,10 @@ bool Flattening::flatten(Function *f) {
 
   // Recalculate switchVar
   for (BasicBlock *i : origBB) {
+    if (!isa<BranchInst>(i->getTerminator()))
+      continue;
+
     ConstantInt *numCase = nullptr;
-
-    if (i->getTerminator()->getOpcode() == Instruction::Invoke) {
-      // Get next case
-      numCase = switchI->findCaseDest(i->getTerminator()->getSuccessor(0));
-      // If next case == default case (switchDefault)
-      if (!numCase) {
-        numCase = cast<ConstantInt>(
-            ConstantInt::get(switchI->getCondition()->getType(),
-                             cryptoutils->scramble32(switchI->getNumCases() - 1,
-                                                     scrambling_key)));
-      }
-      InvokeInst *II = dyn_cast<InvokeInst>(i->getTerminator());
-      // Update switchVar and jump to the end of loop
-      new StoreInst(numCase, load->getPointerOperand(), II);
-      II->setNormalDest(loopEnd);
-      continue;
-    }
-
-    // Ret BB
-    if (i->getTerminator()->getNumSuccessors() == 0) {
-      continue;
-    }
 
     // If it's a non-conditional jump
     if (i->getTerminator()->getNumSuccessors() == 1) {
