@@ -6,6 +6,7 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
@@ -15,6 +16,7 @@
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/CallSite.h"
 #include <fstream>
+#include <set>
 
 using namespace llvm;
 
@@ -36,16 +38,15 @@ struct FunctionCallObfuscate : public FunctionPass {
   nlohmann::json Configuration;
   bool flag;
   bool initialized;
-  bool objchandled;
+  bool opaquepointers;
+  Triple triple;
   FunctionCallObfuscate() : FunctionPass(ID) {
     this->flag = true;
     this->initialized = false;
-    this->objchandled = false;
   }
   FunctionCallObfuscate(bool flag) : FunctionPass(ID) {
     this->flag = flag;
     this->initialized = false;
-    this->objchandled = false;
   }
   StringRef getPassName() const override { return "FunctionCallObfuscate"; }
   bool initialize(Module &M) {
@@ -66,8 +67,8 @@ struct FunctionCallObfuscate : public FunctionPass {
       errs() << "Failed To Load Symbol Configuration From:" << SymbolConfigPath
              << "\n";
     }
-    Triple tri(M.getTargetTriple());
-    if (tri.getVendor() == Triple::VendorType::Apple) {
+    this->triple = Triple(M.getTargetTriple());
+    if (triple.getVendor() == Triple::VendorType::Apple) {
       Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
       // Generic ObjC Runtime Declarations
       FunctionType *IMPType =
@@ -92,96 +93,101 @@ struct FunctionCallObfuscate : public FunctionPass {
       M.getOrInsertFunction("objc_getMetaClass", objc_getMetaClass_Type);
     }
     this->initialized = true;
+    this->opaquepointers = !M.getContext().supportsTypedPointers();
     return true;
   }
-  void HandleObjC(Module &M) {
+  void HandleObjC(Function *F) {
+    std::set<GlobalVariable *> objcclassgv, objcselgv;
+    for (Instruction &I : instructions(F))
+      for (Value *Op : I.operands())
+        if (GlobalVariable *G =
+                dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
+          if (!G->hasName() || !G->hasInitializer() ||
+              !G->getSection().contains("objc"))
+            continue;
+          if (G->getName().startswith("OBJC_CLASSLIST_REFERENCES"))
+            objcclassgv.insert(G);
+          else if (G->getName().startswith("OBJC_SELECTOR_REFERENCES"))
+            objcselgv.insert(G);
+        }
+    Module *M = F->getParent();
     std::vector<Instruction *> toErase;
-    // Iterate all CLASSREF uses and replace with objc_getClass() call
-    // Strings are encrypted in other passes
-    for (GlobalVariable &GV : M.globals()) {
-      if (!GV.hasName() || !GV.hasInitializer() || GV.user_empty())
-        continue;
-      if (GV.getName().contains("OBJC_CLASSLIST_REFERENCES")) {
-        std::string className = GV.getInitializer()->getName().str();
-        className.replace(className.find("OBJC_CLASS_$_"),
-                          strlen("OBJC_CLASS_$_"), "");
-        for (User *U : GV.users()) {
-          if (Instruction *I = dyn_cast<Instruction>(U)) {
-            IRBuilder<> builder(I);
-            Function *objc_getClass_Func =
-                cast<Function>(M.getFunction("objc_getClass"));
-            Value *newClassName =
-                builder.CreateGlobalStringPtr(StringRef(className));
-            CallInst *CI =
-                builder.CreateCall(objc_getClass_Func, {newClassName});
-            // We need to bitcast it back to avoid IRVerifier
-            Value *BCI = builder.CreateBitCast(CI, I->getType());
-            I->replaceAllUsesWith(BCI);
-            toErase.emplace_back(I); // We cannot erase it directly or we will
-                                     // have problems releasing the IRBuilder.
-          }
+    for (GlobalVariable *GV : objcclassgv) {
+      // Iterate all CLASSREF uses and replace with objc_getClass() call
+      // Strings are encrypted in other passes
+      std::string className = GV->getInitializer()->getName().str();
+      className.replace(className.find("OBJC_CLASS_$_"),
+                        strlen("OBJC_CLASS_$_"), "");
+      for (User *U : GV->users())
+        if (Instruction *I = dyn_cast<Instruction>(U)) {
+          IRBuilder<> builder(I);
+          Function *objc_getClass_Func =
+              cast<Function>(M->getFunction("objc_getClass"));
+          Value *newClassName =
+              builder.CreateGlobalStringPtr(StringRef(className));
+          CallInst *CI = builder.CreateCall(objc_getClass_Func, {newClassName});
+          // We need to bitcast it back to avoid IRVerifier
+          Value *BCI = builder.CreateBitCast(CI, I->getType());
+          I->replaceAllUsesWith(BCI);
+          toErase.emplace_back(I); // We cannot erase it directly or we will
+                                   // have problems releasing the IRBuilder.
         }
-        GV.removeDeadConstantUsers();
-        if (GV.getNumUses() == 0) {
-          GV.dropAllReferences();
-          GV.eraseFromParent();
-        }
-      }
+    }
+    for (GlobalVariable *GV : objcselgv) {
       // Selector Convert
-      else if (GV.getName().contains("OBJC_SELECTOR_REFERENCES")) {
-        ConstantExpr *CE = M.getContext().supportsTypedPointers()
-                               ? dyn_cast<ConstantExpr>(GV.getInitializer())
-                               : nullptr;
-        Constant *C = M.getContext().supportsTypedPointers()
-                          ? CE->getOperand(0)
-                          : GV.getInitializer();
-        GlobalVariable *SELNameGV = dyn_cast<GlobalVariable>(C);
-        ConstantDataArray *CDA =
-            dyn_cast<ConstantDataArray>(SELNameGV->getInitializer());
-        StringRef SELName = CDA->getAsString(); // This is REAL Selector Name
-        for (User *U : GV.users()) {
-          if (Instruction *I = dyn_cast<Instruction>(U)) {
-            IRBuilder<> builder(I);
-            Function *sel_registerName_Func =
-                cast<Function>(M.getFunction("sel_registerName"));
-            Value *newGlobalSELName = builder.CreateGlobalStringPtr(SELName);
-            CallInst *CI =
-                builder.CreateCall(sel_registerName_Func, {newGlobalSELName});
-            // We need to bitcast it back to avoid IRVerifier
-            Value *BCI = builder.CreateBitCast(CI, I->getType());
-            I->replaceAllUsesWith(BCI);
-            toErase.emplace_back(I); // We cannot erase it directly or we will
-                                     // have problems releasing the IRBuilder.
-          }
+      GlobalVariable *selgv = dyn_cast<GlobalVariable>(
+          opaquepointers
+              ? GV->getInitializer()
+              : cast<ConstantExpr>(GV->getInitializer())->getOperand(0));
+      ConstantDataArray *CDA =
+          dyn_cast<ConstantDataArray>(selgv->getInitializer());
+      StringRef SELName = CDA->getAsString(); // This is REAL Selector Name
+      for (User *U : GV->users())
+        if (Instruction *I = dyn_cast<Instruction>(U)) {
+          IRBuilder<> builder(I);
+          Function *sel_registerName_Func =
+              cast<Function>(M->getFunction("sel_registerName"));
+          Value *newGlobalSELName = builder.CreateGlobalStringPtr(SELName);
+          CallInst *CI =
+              builder.CreateCall(sel_registerName_Func, {newGlobalSELName});
+          // We need to bitcast it back to avoid IRVerifier
+          Value *BCI = builder.CreateBitCast(CI, I->getType());
+          I->replaceAllUsesWith(BCI);
+          toErase.emplace_back(I); // We cannot erase it directly or we will
+                                   // have problems releasing the IRBuilder.
         }
-        GV.removeDeadConstantUsers();
-        if (GV.getNumUses() == 0) {
-          GV.dropAllReferences();
-          GV.eraseFromParent();
-        }
+    }
+    for (GlobalVariable *GV : objcclassgv) {
+      GV->removeDeadConstantUsers();
+      if (GV->getNumUses() == 0) {
+        GV->dropAllReferences();
+        GV->eraseFromParent();
+      }
+    }
+    for (GlobalVariable *GV : objcselgv) {
+      GV->removeDeadConstantUsers();
+      if (GV->getNumUses() == 0) {
+        GV->dropAllReferences();
+        GV->eraseFromParent();
       }
     }
     for (Instruction *I : toErase)
       I->eraseFromParent();
-    objchandled = true;
   }
   bool runOnFunction(Function &F) override {
     // Construct Function Prototypes
     if (!toObfuscate(flag, &F, "fco"))
       return false;
-    Triple Tri(F.getParent()->getTargetTriple());
-    if (!Tri.isAndroid() && !Tri.isOSDarwin()) {
-      errs() << "Unsupported Target Triple: "
-             << F.getParent()->getTargetTriple() << "\n";
-      return false;
-    }
     errs() << "Running FunctionCallObfuscate On " << F.getName() << "\n";
     Module *M = F.getParent();
     if (!this->initialized)
       initialize(*M);
+    if (!triple.isAndroid() && !triple.isOSDarwin()) {
+      errs() << "Unsupported Target Triple: " << M->getTargetTriple() << "\n";
+      return false;
+    }
     FixFunctionConstantExpr(&F);
-    if (!this->objchandled)
-      HandleObjC(*M);
+    HandleObjC(&F);
     Type *Int32Ty = Type::getInt32Ty(M->getContext());
     Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
     // ObjC Runtime Declarations
@@ -230,16 +236,16 @@ struct FunctionCallObfuscate : public FunctionPass {
                     .get<std::string>();
             StringRef calledFunctionName = StringRef(sname);
             BasicBlock *EntryBlock = CS->getParent();
-            if (Tri.isOSDarwin()) {
+            if (triple.isOSDarwin()) {
               dlopen_flag = DARWIN_FLAG;
-            } else if (Tri.isAndroid()) {
-              if (Tri.isArch64Bit())
+            } else if (triple.isAndroid()) {
+              if (triple.isArch64Bit())
                 dlopen_flag = ANDROID64_FLAG;
               else
                 dlopen_flag = ANDROID32_FLAG;
             } else {
               errs() << "[FunctionCallObfuscate] Unsupported Target Triple:"
-                     << F.getParent()->getTargetTriple() << "\n";
+                     << M->getTargetTriple() << "\n";
               errs() << "[FunctionCallObfuscate] Applying Default Signature:"
                      << dlopen_flag << "\n";
             }
