@@ -496,7 +496,7 @@ struct AntiClassDump : public ModulePass {
         ArrayRef<Constant *>(newStructValue)); // l_OBJC_$_CLASS_METHODS_
     GlobalVariable *newMethodStructGV = new GlobalVariable(
         *M, newType, true, GlobalValue::LinkageTypes::PrivateLinkage,
-        newMethodStruct, "ACDNewInstanceMethodMap");
+        newMethodStruct, "ACDNewClassMethodMap");
     appendToCompilerUsed(*M, {newMethodStructGV});
     if (methodListGV) {
       newMethodStructGV->copyAttributesFrom(
@@ -513,7 +513,9 @@ struct AntiClassDump : public ModulePass {
     Constant *bitcastExpr = ConstantExpr::getBitCast(
         newMethodStructGV, PointerType::getUnqual(StructType::getTypeByName(
                                M->getContext(), "struct.__method_list_t")));
-    classCS->handleOperandChange(classCS->getAggregateElement(5), bitcastExpr);
+    opaquepointers ? classCS->setOperand(5, bitcastExpr)
+                   : classCS->handleOperandChange(
+                         classCS->getAggregateElement(5), bitcastExpr);
     if (methodListGV) {
       methodListGV->replaceAllUsesWith(ConstantExpr::getBitCast(
           newMethodStructGV,
