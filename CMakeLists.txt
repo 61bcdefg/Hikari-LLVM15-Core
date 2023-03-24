@@ -1,4 +1,4 @@
-if (CMAKE_SYSTEM_NAME MATCHES "Linux")
+if (NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
     add_llvm_component_library(LLVMObfuscation
             FunctionCallObfuscate.cpp
             CryptoUtils.cpp
@@ -20,7 +20,12 @@ if (CMAKE_SYSTEM_NAME MATCHES "Linux")
             intrinsics_gen
 
             LINK_COMPONENTS
+            Core
+            IRReader
             Linker
+            Passes
+            Support
+            TransformUtils
             )
 else()
     add_llvm_component_library(LLVMObfuscation
