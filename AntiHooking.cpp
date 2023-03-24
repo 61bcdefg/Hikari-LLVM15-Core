@@ -50,8 +50,7 @@ static cl::opt<std::string>
                                "Hooking Handler IR"),
                       cl::value_desc("filename"), cl::init(""));
 
-static cl::opt<bool> CheckInlineHook("ah_inline", cl::init(true),
-                                     cl::NotHidden,
+static cl::opt<bool> CheckInlineHook("ah_inline", cl::init(true), cl::NotHidden,
                                      cl::desc("Check Inline Hook for AArch64"));
 
 static cl::opt<bool>
@@ -351,4 +350,4 @@ struct AntiHook : public ModulePass {
 
 ModulePass *llvm::createAntiHookPass(bool flag) { return new AntiHook(flag); }
 char AntiHook::ID = 0;
-INITIALIZE_PASS(AntiHook, "antihook", "AntiHook", true, true)
+INITIALIZE_PASS(AntiHook, "antihook", "AntiHook", false, false)

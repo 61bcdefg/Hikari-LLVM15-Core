@@ -533,5 +533,5 @@ ModulePass *createStringEncryptionPass(bool flag) {
 } // namespace llvm
 
 char StringEncryption::ID = 0;
-INITIALIZE_PASS(StringEncryption, "strcry", "Enable String Encryption", true,
-                true)
+INITIALIZE_PASS(StringEncryption, "strcry", "Enable String Encryption", false,
+                false)

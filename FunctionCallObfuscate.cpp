@@ -273,4 +273,4 @@ FunctionPass *createFunctionCallObfuscatePass(bool flag) {
 } // namespace llvm
 char FunctionCallObfuscate::ID = 0;
 INITIALIZE_PASS(FunctionCallObfuscate, "fcoobf",
-                "Enable Function CallSite Obfuscation.", true, true)
+                "Enable Function CallSite Obfuscation.", false, false)

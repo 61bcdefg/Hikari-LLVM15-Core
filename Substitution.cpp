@@ -130,7 +130,7 @@ struct Substitution : public FunctionPass {
 
 char Substitution::ID = 0;
 INITIALIZE_PASS(Substitution, "subobf", "Enable Instruction Substitution.",
-                true, true)
+                false, false)
 FunctionPass *llvm::createSubstitutionPass(bool flag) {
   return new Substitution(flag);
 }

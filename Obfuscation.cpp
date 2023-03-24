@@ -214,7 +214,7 @@ PreservedAnalyses ObfuscationPass::run(Module &M, ModuleAnalysisManager &MAM) {
 
 } // namespace llvm
 char Obfuscation::ID = 0;
-INITIALIZE_PASS_BEGIN(Obfuscation, "obfus", "Enable Obfuscation", true, true)
+INITIALIZE_PASS_BEGIN(Obfuscation, "obfus", "Enable Obfuscation", false, false)
 INITIALIZE_PASS_DEPENDENCY(AntiClassDump);
 INITIALIZE_PASS_DEPENDENCY(BogusControlFlow);
 INITIALIZE_PASS_DEPENDENCY(Flattening);
@@ -223,4 +223,4 @@ INITIALIZE_PASS_DEPENDENCY(IndirectBranch);
 INITIALIZE_PASS_DEPENDENCY(SplitBasicBlock);
 INITIALIZE_PASS_DEPENDENCY(StringEncryption);
 INITIALIZE_PASS_DEPENDENCY(Substitution);
-INITIALIZE_PASS_END(Obfuscation, "obfus", "Enable Obfuscation", true, true)
+INITIALIZE_PASS_END(Obfuscation, "obfus", "Enable Obfuscation", false, false)

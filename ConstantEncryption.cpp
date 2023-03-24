@@ -224,4 +224,4 @@ ModulePass *createConstantEncryptionPass(bool flag) {
 } // namespace llvm
 char ConstantEncryption::ID = 0;
 INITIALIZE_PASS(ConstantEncryption, "constenc",
-                "Enable ConstantInt GV Encryption.", true, true)
+                "Enable ConstantInt GV Encryption.", false, false)

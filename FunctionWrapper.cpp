@@ -149,5 +149,5 @@ ModulePass *createFunctionWrapperPass(bool flag) {
 } // namespace llvm
 
 char FunctionWrapper::ID = 0;
-INITIALIZE_PASS(FunctionWrapper, "funcwra", "Enable FunctionWrapper.", true,
-                true)
+INITIALIZE_PASS(FunctionWrapper, "funcwra", "Enable FunctionWrapper.", false,
+                false)

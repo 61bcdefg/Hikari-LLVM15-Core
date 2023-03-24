@@ -611,7 +611,8 @@ struct BogusControlFlow : public FunctionPass {
           FunctionType::get(Type::getVoidTy(alteredBB->getContext()), false),
           junk, "", true, false);
 #if LLVM_VERSION_MAJOR >= 16
-      CallInst::Create(IA, std::nullopt, "", &*alteredBB->getFirstInsertionPt());
+      CallInst::Create(IA, std::nullopt, "",
+                       &*alteredBB->getFirstInsertionPt());
 #else
       CallInst::Create(IA, None, "", &*alteredBB->getFirstInsertionPt());
 #endif
@@ -748,8 +749,8 @@ struct BogusControlFlow : public FunctionPass {
 } // namespace llvm
 
 char BogusControlFlow::ID = 0;
-INITIALIZE_PASS(BogusControlFlow, "bcfobf", "Enable BogusControlFlow.", true,
-                true)
+INITIALIZE_PASS(BogusControlFlow, "bcfobf", "Enable BogusControlFlow.", false,
+                false)
 FunctionPass *llvm::createBogusControlFlowPass(bool flag) {
   return new BogusControlFlow(flag);
 }

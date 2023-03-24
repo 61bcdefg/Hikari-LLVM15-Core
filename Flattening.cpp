@@ -24,8 +24,8 @@ char Flattening::ID = 0;
 FunctionPass *llvm::createFlatteningPass(bool flag) {
   return new Flattening(flag);
 }
-INITIALIZE_PASS(Flattening, "cffobf", "Enable Control Flow Flattening.", true,
-                true)
+INITIALIZE_PASS(Flattening, "cffobf", "Enable Control Flow Flattening.", false,
+                false)
 bool Flattening::runOnFunction(Function &F) {
   Function *tmp = &F;
   // Do we obfuscate

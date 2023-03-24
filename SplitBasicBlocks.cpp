@@ -118,8 +118,8 @@ struct SplitBasicBlock : public FunctionPass {
 } // namespace
 
 char SplitBasicBlock::ID = 0;
-INITIALIZE_PASS(SplitBasicBlock, "splitobf", "Enable BasicBlockSpliting.", true,
-                true)
+INITIALIZE_PASS(SplitBasicBlock, "splitobf", "Enable BasicBlockSpliting.",
+                false, false)
 
 FunctionPass *llvm::createSplitBasicBlockPass(bool flag) {
   return new SplitBasicBlock(flag);

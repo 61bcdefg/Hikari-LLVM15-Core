@@ -266,4 +266,4 @@ ModulePass *createAntiDebuggingPass(bool flag) {
 } // namespace llvm
 
 char AntiDebugging::ID = 0;
-INITIALIZE_PASS(AntiDebugging, "adb", "Enable AntiDebugging.", true, true)
+INITIALIZE_PASS(AntiDebugging, "adb", "Enable AntiDebugging.", false, false)
