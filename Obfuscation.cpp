@@ -8,6 +8,7 @@
 */
 #include "llvm/Transforms/Obfuscation/Obfuscation.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Transforms/Obfuscation/Utils.h"
 
 using namespace llvm;
 
@@ -112,6 +113,8 @@ struct Obfuscation : public ModulePass {
     timer->startTimer();
 
     errs() << "Running Hikari On " << M.getSourceFileName() << "\n";
+
+    annotation2Metadata(M);
 
     ModulePass *MP = createAntiHookPass(EnableAntiHooking);
     MP->doInitialization(M);

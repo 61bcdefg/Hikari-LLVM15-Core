@@ -35,21 +35,28 @@ static cl::opt<bool>
                   cl::desc("Substitute xor operator of ConstantEncryption"),
                   cl::value_desc("Substitute xor operator"), cl::init(false),
                   cl::Optional);
+static bool SubstituteXorTemp = false;
+
 static cl::opt<bool>
     ConstToGV("constenc_togv",
               cl::desc("Replace ConstantInt with GlobalVariable"),
               cl::value_desc("ConstantInt to GlobalVariable"), cl::init(false),
               cl::Optional);
-static cl::opt<unsigned int>
+static bool ConstToGVTemp = false;
+
+static cl::opt<uint32_t>
     ObfProbRate("constenc_prob",
                 cl::desc("Choose the probability [%] each instructions will be "
                          "obfuscated by the ConstantEncryption pass"),
                 cl::value_desc("probability rate"), cl::init(50), cl::Optional);
-static cl::opt<int> ObfTimes(
+static uint32_t ObfProbRateTemp = 50;
+
+static cl::opt<uint32_t> ObfTimes(
     "constenc_times",
     cl::desc(
         "Choose how many time the ConstantEncryption pass loop on a function"),
     cl::value_desc("Number of Times"), cl::init(1), cl::Optional);
+static uint32_t ObfTimesTemp = 1;
 
 namespace llvm {
 struct ConstantEncryption : public ModulePass {
@@ -62,21 +69,29 @@ struct ConstantEncryption : public ModulePass {
     if (isa<IntrinsicInst>(I) || isa<GetElementPtrInst>(I) || isa<PHINode>(I) ||
         I->isAtomic())
       return false;
-    if (!(cryptoutils->get_range(100) <= ObfProbRate))
+    if (!(cryptoutils->get_range(100) <= ObfProbRateTemp))
       return false;
     return true;
   }
   bool runOnModule(Module &M) override {
-    if (ObfProbRate > 100) {
-      errs() << "ConstantEncryption application instruction percentage "
-                "-constenc_prob=x must be 0 < x <= 100";
-      return false;
-    }
     const DataLayout &DL = M.getDataLayout();
     for (Function &F : M)
       if (toObfuscate(flag, &F, "constenc") && !F.isPresplitCoroutine()) {
         errs() << "Running ConstantEncryption On " << F.getName() << "\n";
-        int times = ObfTimes;
+        if (!toObfuscateUint32Option(&F, "constenc_prob", &ObfProbRateTemp))
+          ObfProbRateTemp = ObfProbRate;
+        if (ObfProbRateTemp > 100) {
+          errs() << "ConstantEncryption application instruction percentage "
+                    "-constenc_prob=x must be 0 < x <= 100";
+          return false;
+        }
+        if (!toObfuscateUint32Option(&F, "constenc_times", &ObfTimesTemp))
+          ObfTimesTemp = ObfTimes;
+        if (!toObfuscateBoolOption(&F, "constenc_togv", &ConstToGVTemp))
+          ConstToGVTemp = ConstToGV;
+        if (!toObfuscateBoolOption(&F, "constenc_subxor", &SubstituteXorTemp))
+          SubstituteXorTemp = SubstituteXor;
+        uint32_t times = ObfTimesTemp;
         while (times) {
           for (Instruction &I : instructions(F)) {
             if (!shouldEncryptConstant(&I))
@@ -95,7 +110,7 @@ struct ConstantEncryption : public ModulePass {
                   HandleConstantIntInitializerGV(G);
             }
           }
-          if (ConstToGV) {
+          if (ConstToGVTemp) {
             std::vector<Instruction *> ins;
             for (Instruction &I : instructions(F)) {
               if (!shouldEncryptConstant(&I))
@@ -179,7 +194,7 @@ struct ConstantEncryption : public ModulePass {
         SI->getOperand(0)->replaceUsesWithIf(
             XORInst, [XORInst](Use &U) { return U.getUser() != XORInst; });
       }
-      if (XORInst && SubstituteXor)
+      if (XORInst && SubstituteXorTemp)
         SubstituteImpl::substituteXor(XORInst);
     }
   }
@@ -194,7 +209,7 @@ struct ConstantEncryption : public ModulePass {
     BinaryOperator *NewOperand =
         BinaryOperator::Create(Instruction::Xor, New, Key, "", I);
     I->setOperand(opindex, NewOperand);
-    if (SubstituteXor)
+    if (SubstituteXorTemp)
       SubstituteImpl::substituteXor(NewOperand);
   }
 

@@ -19,6 +19,7 @@ static cl::opt<uint32_t>
                        cl::desc("Choose the probability [%] each element of "
                                 "ConstantDataSequential will be "
                                 "obfuscated by the -strcry pass"));
+static uint32_t ElementEncryptProbTemp = 100;
 
 namespace llvm {
 struct StringEncryption : public ModulePass {
@@ -78,16 +79,21 @@ struct StringEncryption : public ModulePass {
     // to handlers
     this->opaquepointers = !M.getContext().supportsTypedPointers();
 
-    // Check if the number of applications is correct
-    if (!((ElementEncryptProb > 0) && (ElementEncryptProb <= 100))) {
-      errs() << "StringEncryption application element percentage "
-                "-strcry_prob=x must be 0 < x <= 100";
-      return false;
-    }
-
     for (Function &F : M)
       if (toObfuscate(flag, &F, "strenc")) {
         errs() << "Running StringEncryption On " << F.getName() << "\n";
+
+        if (!toObfuscateUint32Option(&F, "strcry_prob",
+                                     &ElementEncryptProbTemp))
+          ElementEncryptProbTemp = ElementEncryptProb;
+
+        // Check if the number of applications is correct
+        if (!((ElementEncryptProbTemp > 0) &&
+              (ElementEncryptProbTemp <= 100))) {
+          errs() << "StringEncryption application element percentage "
+                    "-strcry_prob=x must be 0 < x <= 100";
+          return false;
+        }
         Constant *S =
             ConstantInt::getNullValue(Type::getInt32Ty(M.getContext()));
         GlobalVariable *GV = new GlobalVariable(
@@ -235,7 +241,7 @@ struct StringEncryption : public ModulePass {
       if (intType == Type::getInt8Ty(M->getContext())) {
         std::vector<uint8_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
-          if (cryptoutils->get_range(100) >= ElementEncryptProb) {
+          if (cryptoutils->get_range(100) >= ElementEncryptProbTemp) {
             unencryptedindex[GV].emplace_back(i);
             keys.emplace_back(1);
             dummy.emplace_back(CDS->getElementAsInteger(i));
@@ -257,7 +263,7 @@ struct StringEncryption : public ModulePass {
       } else if (intType == Type::getInt16Ty(M->getContext())) {
         std::vector<uint16_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
-          if (cryptoutils->get_range(100) >= ElementEncryptProb) {
+          if (cryptoutils->get_range(100) >= ElementEncryptProbTemp) {
             unencryptedindex[GV].emplace_back(i);
             keys.emplace_back(1);
             dummy.emplace_back(CDS->getElementAsInteger(i));
@@ -278,7 +284,7 @@ struct StringEncryption : public ModulePass {
       } else if (intType == Type::getInt32Ty(M->getContext())) {
         std::vector<uint32_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
-          if (cryptoutils->get_range(100) >= ElementEncryptProb) {
+          if (cryptoutils->get_range(100) >= ElementEncryptProbTemp) {
             unencryptedindex[GV].emplace_back(i);
             keys.emplace_back(1);
             dummy.emplace_back(CDS->getElementAsInteger(i));
@@ -299,7 +305,7 @@ struct StringEncryption : public ModulePass {
       } else if (intType == Type::getInt64Ty(M->getContext())) {
         std::vector<uint64_t> keys, encry, dummy;
         for (unsigned i = 0; i < CDS->getNumElements(); i++) {
-          if (cryptoutils->get_range(100) >= ElementEncryptProb) {
+          if (cryptoutils->get_range(100) >= ElementEncryptProbTemp) {
             unencryptedindex[GV].emplace_back(i);
             keys.emplace_back(1);
             dummy.emplace_back(CDS->getElementAsInteger(i));

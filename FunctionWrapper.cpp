@@ -17,12 +17,14 @@
 
 using namespace llvm;
 
-static cl::opt<int>
+static cl::opt<uint32_t>
     ProbRate("fw_prob",
              cl::desc("Choose the probability [%] For Each CallSite To Be "
                       "Obfuscated By FunctionWrapper"),
              cl::value_desc("Probability Rate"), cl::init(30), cl::Optional);
-static cl::opt<int> ObfTimes(
+static uint32_t ProbRateTemp = 30;
+
+static cl::opt<uint32_t> ObfTimes(
     "fw_times",
     cl::desc(
         "Choose how many time the FunctionWrapper pass loop on a CallSite"),
@@ -36,23 +38,25 @@ struct FunctionWrapper : public ModulePass {
   FunctionWrapper(bool flag) : ModulePass(ID) { this->flag = flag; }
   StringRef getPassName() const override { return "FunctionWrapper"; }
   bool runOnModule(Module &M) override {
-    if (ProbRate > 100) {
-      errs() << "FunctionWrapper application CallSite percentage "
-                "-fw_prob=x must be 0 < x <= 100";
-      return false;
-    }
     std::vector<CallSite *> callsites;
     for (Function &F : M) {
       if (toObfuscate(flag, &F, "fw")) {
         errs() << "Running FunctionWrapper On " << F.getName() << "\n";
+        if (!toObfuscateUint32Option(&F, "fw_prob", &ProbRateTemp))
+          ProbRateTemp = ProbRate;
+        if (ProbRateTemp > 100) {
+          errs() << "FunctionWrapper application CallSite percentage "
+                    "-fw_prob=x must be 0 < x <= 100";
+          return false;
+        }
         for (Instruction &Inst : instructions(F))
           if ((isa<CallInst>(&Inst) || isa<InvokeInst>(&Inst)))
-            if ((int)cryptoutils->get_range(100) <= ProbRate)
+            if (cryptoutils->get_range(100) <= ProbRateTemp)
               callsites.emplace_back(new CallSite(&Inst));
       }
     }
     for (CallSite *CS : callsites)
-      for (int i = 0; i < ObfTimes && CS != nullptr; i++)
+      for (uint32_t i = 0; i < ObfTimes && CS != nullptr; i++)
         CS = HandleCallSite(CS);
     return true;
   } // End of runOnModule

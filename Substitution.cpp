@@ -14,15 +14,18 @@ using namespace llvm;
 
 #define DEBUG_TYPE "substitution"
 
-static cl::opt<int>
+static cl::opt<uint32_t>
     ObfTimes("sub_loop",
              cl::desc("Choose how many time the -sub pass loops on a function"),
              cl::value_desc("number of times"), cl::init(1), cl::Optional);
-static cl::opt<unsigned int>
+static uint32_t ObfTimesTemp = 1;
+
+static cl::opt<uint32_t>
     ObfProbRate("sub_prob",
                 cl::desc("Choose the probability [%] each instructions will be "
                          "obfuscated by the InstructionSubstitution pass"),
                 cl::value_desc("probability rate"), cl::init(50), cl::Optional);
+static uint32_t ObfProbRateTemp = 50;
 
 // Stats
 STATISTIC(Add, "Add substitued");
@@ -44,12 +47,17 @@ struct Substitution : public FunctionPass {
   Substitution() : FunctionPass(ID) { this->flag = true; }
 
   bool runOnFunction(Function &F) override {
+    if (!toObfuscateUint32Option(&F, "sub_loop", &ObfTimesTemp))
+      ObfTimesTemp = ObfTimes;
+    if (!toObfuscateUint32Option(&F, "sub_prob", &ObfProbRateTemp))
+      ObfProbRateTemp = ObfProbRate;
+
     // Check if the percentage is correct
-    if (ObfTimes <= 0) {
+    if (ObfTimesTemp <= 0) {
       errs() << "Substitution application number -sub_loop=x must be x > 0";
       return false;
     }
-    if (ObfProbRate > 100) {
+    if (ObfProbRateTemp > 100) {
       errs() << "InstructionSubstitution application instruction percentage "
                 "-sub_prob=x must be 0 < x <= 100";
       return false;
@@ -67,10 +75,11 @@ struct Substitution : public FunctionPass {
   };
   bool substitute(Function *f) {
     // Loop for the number of time we run the pass on the function
-    int times = ObfTimes;
+    uint32_t times = ObfTimesTemp;
     do {
       for (Instruction &inst : instructions(f))
-        if (inst.isBinaryOp() && cryptoutils->get_range(100) <= ObfProbRate) {
+        if (inst.isBinaryOp() &&
+            cryptoutils->get_range(100) <= ObfProbRateTemp) {
           switch (inst.getOpcode()) {
           case BinaryOperator::Add:
             // case BinaryOperator::FAdd:

@@ -37,7 +37,7 @@ static cl::opt<std::string> PreCompiledIRPath(
     "adbextirpath",
     cl::desc("External Path Pointing To Pre-compiled AntiDebugging IR"),
     cl::value_desc("filename"), cl::init(""));
-static cl::opt<int>
+static cl::opt<uint32_t>
     ProbRate("adb_prob",
              cl::desc("Choose the probability [%] For Each Function To Be "
                       "Obfuscated By AntiDebugging"),
@@ -121,7 +121,7 @@ struct AntiDebugging : public ModulePass {
         errs() << "Running AntiDebugging On " << F.getName() << "\n";
         if (!this->initialized)
           initialize(M);
-        if ((int)cryptoutils->get_range(100) <= ProbRate)
+        if (cryptoutils->get_range(100) <= ProbRate)
           runOnFunction(F);
       }
     }

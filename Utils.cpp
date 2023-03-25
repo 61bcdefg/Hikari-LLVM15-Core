@@ -5,10 +5,12 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/NoFolder.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include <sstream>
 
 using namespace llvm;
 
@@ -70,49 +72,6 @@ void fixStack(Function *f) {
   } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 
-std::string readAnnotate(Function *f) {
-  std::string annotation = "";
-
-  // Get annotation variable
-  GlobalVariable *glob =
-      f->getParent()->getGlobalVariable("llvm.global.annotations");
-
-  if (glob)
-    if (ConstantArray *ca = dyn_cast<ConstantArray>(glob->getInitializer())) {
-      for (unsigned i = 0; i < ca->getNumOperands(); ++i)
-        if (ConstantStruct *structAn =
-                dyn_cast<ConstantStruct>(ca->getOperand(i))) {
-          if (ConstantExpr *expr =
-                  dyn_cast<ConstantExpr>(structAn->getOperand(0))) {
-            if (expr->getOpcode() == Instruction::BitCast &&
-                expr->getOperand(0) == f) {
-              ConstantExpr *note = cast<ConstantExpr>(structAn->getOperand(1));
-              // If it's a GetElementPtr, that means we found the variable
-              // containing the annotations
-              if (note->getOpcode() == Instruction::GetElementPtr)
-                if (GlobalVariable *annoteStr =
-                        dyn_cast<GlobalVariable>(note->getOperand(0)))
-                  if (ConstantDataSequential *data =
-                          dyn_cast<ConstantDataSequential>(
-                              annoteStr->getInitializer()))
-                    if (data->isString())
-                      annotation += data->getAsString().lower() + " ";
-            }
-          } else if (structAn->getOperand(0) == f) { // opaque pointer
-            Constant *note = structAn->getOperand(1);
-            if (GlobalVariable *annoteStr =
-                    dyn_cast<GlobalVariable>(note->getOperand(0)))
-              if (ConstantDataSequential *data =
-                      dyn_cast<ConstantDataSequential>(
-                          annoteStr->getInitializer()))
-                if (data->isString())
-                  annotation += data->getAsString().lower() + " ";
-          }
-        }
-    }
-  return annotation;
-}
-
 // Unlike O-LLVM which uses __attribute__ that is not supported by the ObjC
 // CFE. We use a dummy call here and remove the call later Very dumb and
 // definitely slower than the function attribute method Merely a hack
@@ -137,17 +96,68 @@ bool toObfuscate(bool flag, Function *f, std::string attribute) {
   }
   std::string attr = attribute;
   std::string attrNo = "no" + attr;
-  // We have to check the nofla flag first
-  // Because .find("fla") is true for a string like "fla" or
-  // "nofla"
-  if (readAnnotate(f).find(attrNo) != std::string::npos ||
-      readFlag(f, attrNo)) {
+  if (readAnnotationMetadata(f, attrNo) || readFlag(f, attrNo)) {
     return false;
   }
-  if (readAnnotate(f).find(attr) != std::string::npos || readFlag(f, attr)) {
+  if (readAnnotationMetadata(f, attr) || readFlag(f, attr)) {
     return true;
   }
   return flag;
+}
+
+bool toObfuscateBoolOption(Function *f, std::string option, bool *val) {
+  std::string opt = option;
+  std::string optDisable = "no" + option;
+  if (readAnnotationMetadata(f, optDisable) || readFlag(f, optDisable)) {
+    *val = false;
+    return true;
+  }
+  if (readAnnotationMetadata(f, opt) || readFlag(f, opt)) {
+    *val = true;
+    return true;
+  }
+  return false;
+}
+
+static bool readAnnotationMetadataUint32OptVal(Function *f, std::string opt,
+                                               uint32_t *val) {
+  MDNode *Existing = f->getMetadata(LLVMContext::MD_annotation);
+  if (Existing) {
+    MDTuple *Tuple = cast<MDTuple>(Existing);
+    for (auto &N : Tuple->operands()) {
+      StringRef mdstr = cast<MDString>(N.get())->getString();
+      std::string estr = opt + "=";
+      if (mdstr.startswith(estr)) {
+        *val = atoi(mdstr.substr(strlen(estr.c_str())).str().c_str());
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static bool readFlagUint32OptVal(Function *f, std::string opt, uint32_t *val) {
+  for (Instruction &I : instructions(f)) {
+    Instruction *Inst = &I;
+    if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
+      if (CI->getCalledFunction() != nullptr &&
+          CI->getCalledFunction()->getName().contains("hikari_" + opt)) {
+        if (ConstantInt *C = dyn_cast<ConstantInt>(CI->getArgOperand(0))) {
+          *val = (uint32_t)C->getValue().getZExtValue();
+          CI->eraseFromParent();
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+bool toObfuscateUint32Option(Function *f, std::string option, uint32_t *val) {
+  if (readAnnotationMetadataUint32OptVal(f, option, val) ||
+      readFlagUint32OptVal(f, option, val))
+    return true;
+  return false;
 }
 
 bool hasApplePtrauth(Module *M) {
@@ -196,109 +206,79 @@ void turnOffOptimization(Function *f) {
     f->addFnAttr(Attribute::AttrKind::OptimizeNone);
 }
 
-static GlobalVariable *createAnnoStringGV(Module *M, StringRef Str) {
-  Constant *s = ConstantDataArray::getString(M->getContext(), Str);
-  GlobalVariable *GV = new GlobalVariable(
-      *M, s->getType(), true, llvm::GlobalValue::PrivateLinkage, s, ".str");
-  GV->setSection("llvm.metadata");
-  GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  return GV;
+static inline std::vector<std::string> splitString(std::string str) {
+  std::stringstream ss(str);
+  std::string word;
+  std::vector<std::string> words;
+  while (ss >> word)
+    words.emplace_back(word);
+  return words;
 }
 
-static Constant *createNewCSForAnnotationWithAppendedStr(
-    Function *f, std::vector<Constant *> &Annotations, std::string str) {
-  PointerType *GlobalsInt8PtrTy =
-      Type::getInt8Ty(f->getParent()->getContext())
-          ->getPointerTo(
-              f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace());
-  Constant *GVInGlobalsAS = f;
-  if (f->getAddressSpace() !=
-      f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace())
-    GVInGlobalsAS = llvm::ConstantExpr::getAddrSpaceCast(
-        f,
-        f->getValueType()->getPointerTo(
-            f->getParent()->getDataLayout().getDefaultGlobalsAddressSpace()));
-  Constant *Fields[] = {
-      ConstantExpr::getBitCast(GVInGlobalsAS, GlobalsInt8PtrTy),
-      ConstantExpr::getBitCast(createAnnoStringGV(f->getParent(), str),
-                               GlobalsInt8PtrTy),
-      ConstantExpr::getBitCast(
-          createAnnoStringGV(f->getParent(),
-                             f->getParent()->getSourceFileName()),
-          GlobalsInt8PtrTy),
-      ConstantInt::get(Type::getInt32Ty(f->getParent()->getContext()), 0),
-      ConstantPointerNull::get(GlobalsInt8PtrTy)};
-  return ConstantStruct::getAnon(Fields);
-}
+void annotation2Metadata(Module &M) {
+  GlobalVariable *Annotations = M.getGlobalVariable("llvm.global.annotations");
+  if (!Annotations)
+    return;
+  auto *C = dyn_cast<ConstantArray>(Annotations->getInitializer());
+  if (!C)
+    return;
+  std::vector<ConstantStruct *> toDelete;
+  for (unsigned int i = 0; i < C->getNumOperands(); i++)
+    if (ConstantStruct *CS = dyn_cast<ConstantStruct>(C->getOperand(i))) {
+      GlobalValue *StrC =
+          dyn_cast<GlobalValue>(CS->getOperand(1)->stripPointerCasts());
+      if (!StrC)
+        continue;
+      ConstantDataSequential *StrData =
+          dyn_cast<ConstantDataSequential>(StrC->getOperand(0));
+      if (!StrData)
+        continue;
+      Function *Fn = dyn_cast<Function>(CS->getOperand(0)->stripPointerCasts());
+      if (!Fn)
+        continue;
 
-void writeAnnotate(Function *f, std::string annotation) {
-  Module *M = f->getParent();
-  GlobalVariable *glob = M->getGlobalVariable("llvm.global.annotations");
-  if (glob) {
-    if (ConstantArray *ca = dyn_cast<ConstantArray>(glob->getInitializer())) {
-      bool fHasAnnotation = false;
-      for (unsigned i = 0; i < ca->getNumOperands(); ++i)
-        if (ConstantStruct *structAn =
-                dyn_cast<ConstantStruct>(ca->getOperand(i))) {
-          if (ConstantExpr *expr =
-                  dyn_cast<ConstantExpr>(structAn->getOperand(0))) {
-            if (expr->getOpcode() == Instruction::BitCast &&
-                expr->getOperand(0) == f) {
-              fHasAnnotation = true;
-              ConstantExpr *note = cast<ConstantExpr>(structAn->getOperand(1));
-              // If it's a GetElementPtr, that means we found the variable
-              // containing the annotations
-              if (note->getOpcode() == Instruction::GetElementPtr)
-                if (GlobalVariable *annoteStr =
-                        dyn_cast<GlobalVariable>(note->getOperand(0)))
-                  if (ConstantDataSequential *data =
-                          dyn_cast<ConstantDataSequential>(
-                              annoteStr->getInitializer()))
-                    if (data->isString())
-                      annoteStr->setInitializer(ConstantDataArray::getString(
-                          M->getContext(),
-                          data->getAsString().str() + " " + annotation));
-            }
-          } else if (structAn->getOperand(0) == f) { // opaque pointer
-            Constant *note = structAn->getOperand(1);
-            if (GlobalVariable *annoteStr =
-                    dyn_cast<GlobalVariable>(note->getOperand(0)))
-              if (ConstantDataSequential *data =
-                      dyn_cast<ConstantDataSequential>(
-                          annoteStr->getInitializer()))
-                if (data->isString())
-                  annoteStr->setInitializer(ConstantDataArray::getString(
-                      M->getContext(),
-                      data->getAsString().str() + " " + annotation));
-          }
-        }
-      if (!fHasAnnotation) {
-        std::vector<Constant *> Annotations;
-        for (unsigned int i = 0; i < ca->getNumOperands(); i++)
-          Annotations.emplace_back(ca->getOperand(i));
-        Annotations.emplace_back(createNewCSForAnnotationWithAppendedStr(
-            f, Annotations, annotation));
-        Constant *newCA = ConstantArray::get(
-            ArrayType::get(Annotations[0]->getType(), Annotations.size()),
-            Annotations);
-        glob->setInitializer(newCA);
-      }
+      toDelete.emplace_back(CS);
+      // Add annotation to the function.
+      std::vector<std::string> strs =
+          splitString(StrData->getAsCString().str());
+      for (std::string str : strs)
+        writeAnnotationMetadata(Fn, str);
     }
-  } else {
-    Type *Int32Ty = Type::getInt32Ty(M->getContext());
-    Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
-    StructType *ST = StructType::get(
-        M->getContext(), {Int8PtrTy, Int8PtrTy, Int8PtrTy, Int32Ty, Int8PtrTy});
-    ArrayType *AT = ArrayType::get(ST, 1);
-    std::vector<Constant *> Annotations = {};
-    ConstantArray *CA = cast<ConstantArray>(ConstantArray::get(
-        AT,
-        {createNewCSForAnnotationWithAppendedStr(f, Annotations, annotation)}));
-    GlobalVariable *newGV = new GlobalVariable(*M, CA->getType(), false,
-                                               GlobalValue::AppendingLinkage,
-                                               CA, "llvm.global.annotations");
-    newGV->setSection("llvm.metadata");
+  for (ConstantStruct *CS : toDelete)
+    CS->dropAllReferences();
+}
+
+bool readAnnotationMetadata(Function *f, std::string annotation) {
+  MDNode *Existing = f->getMetadata(LLVMContext::MD_annotation);
+  if (Existing) {
+    MDTuple *Tuple = cast<MDTuple>(Existing);
+    for (auto &N : Tuple->operands())
+      if (cast<MDString>(N.get())->getString() == annotation)
+        return true;
   }
+  return false;
+}
+
+void writeAnnotationMetadata(Function *f, std::string annotation) {
+  LLVMContext &Context = f->getContext();
+  MDBuilder MDB(Context);
+
+  MDNode *Existing = f->getMetadata(LLVMContext::MD_annotation);
+  SmallVector<Metadata *, 4> Names;
+  bool AppendName = true;
+  if (Existing) {
+    MDTuple *Tuple = cast<MDTuple>(Existing);
+    for (auto &N : Tuple->operands()) {
+      if (cast<MDString>(N.get())->getString() == annotation)
+        AppendName = false;
+      Names.push_back(N.get());
+    }
+  }
+  if (AppendName)
+    Names.emplace_back(MDB.createString(annotation));
+
+  MDNode *MD = MDTuple::get(Context, Names);
+  f->setMetadata(LLVMContext::MD_annotation, MD);
 }
 
 #if 0

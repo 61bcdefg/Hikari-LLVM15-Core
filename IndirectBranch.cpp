@@ -23,10 +23,13 @@ using namespace llvm;
 static cl::opt<bool>
     UseStack("indibran-use-stack", cl::init(false), cl::NotHidden,
              cl::desc("[IndirectBranch]Stack-based indirect jumps"));
+static bool UseStackTemp = false;
+
 static cl::opt<bool>
     EncryptJumpTarget("indibran-enc-jump-target", cl::init(false),
                       cl::NotHidden,
                       cl::desc("[IndirectBranch]Encrypt jump target"));
+static bool EncryptJumpTargetTemp = false;
 
 namespace llvm {
 struct IndirectBranch : public FunctionPass {
@@ -52,7 +55,9 @@ struct IndirectBranch : public FunctionPass {
     for (Function &F : M) {
       if (!toObfuscate(flag, &F, "indibr"))
         continue;
-      if (UseStack)
+      if (!toObfuscateBoolOption(&F, "indibran_use_stack", &UseStackTemp))
+        UseStackTemp = UseStack;
+      if (UseStackTemp)
         turnOffOptimization(&F);
 
       // See https://github.com/61bcdefg/Hikari-LLVM15/issues/32
@@ -62,14 +67,18 @@ struct IndirectBranch : public FunctionPass {
       FPM.addPass(LowerSwitchPass());
       FPM.run(F, FAM);
 
-      if (EncryptJumpTarget)
+      if (!toObfuscateBoolOption(&F, "indibran_enc_jump_target",
+                                 &EncryptJumpTargetTemp))
+        EncryptJumpTargetTemp = EncryptJumpTarget;
+
+      if (EncryptJumpTargetTemp)
         encmap[&F] = ConstantInt::get(
             Type::getInt32Ty(M.getContext()),
             cryptoutils->get_range(UINT8_MAX, UINT16_MAX * 2) * 4);
       for (BasicBlock &BB : F)
         if (!BB.isEntryBlock()) {
           indexmap[&BB] = i++;
-          BBs.emplace_back(EncryptJumpTarget
+          BBs.emplace_back(EncryptJumpTargetTemp
                                ? ConstantExpr::getGetElementPtr(
                                      Type::getInt8Ty(M.getContext()),
                                      ConstantExpr::getBitCast(
@@ -137,7 +146,7 @@ struct IndirectBranch : public FunctionPass {
     IRBuilder<NoFolder> *IRBEntry =
         new IRBuilder<NoFolder>(Func.getEntryBlock().getTerminator());
     for (BranchInst *BI : BIs) {
-      if (UseStack &&
+      if (UseStackTemp &&
           IRBEntry->GetInsertPoint() !=
               (BasicBlock::iterator)Func.getEntryBlock().getTerminator())
         IRBEntry->SetInsertPoint(Func.getEntryBlock().getTerminator());
@@ -158,12 +167,12 @@ struct IndirectBranch : public FunctionPass {
         std::vector<Constant *> BlockAddresses;
         for (BasicBlock *BB : BBs)
           BlockAddresses.emplace_back(
-              EncryptJumpTarget ? ConstantExpr::getGetElementPtr(
-                                      Int8Ty,
-                                      ConstantExpr::getBitCast(
-                                          BlockAddress::get(BB), Int8PtrTy),
-                                      encmap[&Func])
-                                : BlockAddress::get(BB));
+              EncryptJumpTargetTemp ? ConstantExpr::getGetElementPtr(
+                                          Int8Ty,
+                                          ConstantExpr::getBitCast(
+                                              BlockAddress::get(BB), Int8PtrTy),
+                                          encmap[&Func])
+                                    : BlockAddress::get(BB));
         // Create a new GV
         Constant *BlockAddressArray =
             ConstantArray::get(AT, ArrayRef<Constant *>(BlockAddresses));
@@ -178,7 +187,7 @@ struct IndirectBranch : public FunctionPass {
       if (BI->isConditional()) {
         Value *condition = BI->getCondition();
         Value *zext = IRBBI->CreateZExt(condition, Int32Ty);
-        if (UseStack) {
+        if (UseStackTemp) {
           AllocaInst *condAI = IRBEntry->CreateAlloca(Int32Ty);
           IRBBI->CreateStore(zext, condAI);
           index = condAI;
@@ -189,10 +198,10 @@ struct IndirectBranch : public FunctionPass {
       } else {
         Value *indexval = nullptr;
         ConstantInt *IndexEncKey =
-            EncryptJumpTarget ? cast<ConstantInt>(ConstantInt::get(
-                                    Int32Ty, cryptoutils->get_uint32_t()))
-                              : nullptr;
-        if (EncryptJumpTarget) {
+            EncryptJumpTargetTemp ? cast<ConstantInt>(ConstantInt::get(
+                                        Int32Ty, cryptoutils->get_uint32_t()))
+                                  : nullptr;
+        if (EncryptJumpTargetTemp) {
           GlobalVariable *indexgv = new GlobalVariable(
               *M, Int32Ty, false, GlobalValue::LinkageTypes::PrivateLinkage,
               ConstantInt::get(IndexEncKey->getType(),
@@ -200,25 +209,24 @@ struct IndirectBranch : public FunctionPass {
                                    indexmap[BI->getSuccessor(0)]),
               "IndirectBranchingIndex");
           appendToCompilerUsed(*M, {indexgv});
-          indexval = (UseStack ? IRBEntry : IRBBI)
+          indexval = (UseStackTemp ? IRBEntry : IRBBI)
                          ->CreateLoad(indexgv->getValueType(), indexgv);
         } else {
           indexval = ConstantInt::get(Int32Ty, indexmap[BI->getSuccessor(0)]);
         }
-        if (UseStack) {
+        if (UseStackTemp) {
           AllocaInst *AI = IRBEntry->CreateAlloca(indexval->getType());
           IRBEntry->CreateStore(indexval, AI);
           index = IRBEntry->CreateLoad(AI->getAllocatedType(), AI);
         } else {
           index = indexval;
         }
-        RealIndex =
-            EncryptJumpTarget
-                ? (UseStack ? IRBEntry : IRBBI)->CreateXor(index, IndexEncKey)
-                : index;
+        RealIndex = EncryptJumpTargetTemp ? (UseStackTemp ? IRBEntry : IRBBI)
+                                                ->CreateXor(index, IndexEncKey)
+                                          : index;
       }
       Value *LI, *enckeyLoad, *gepptr = nullptr;
-      if (UseStack) {
+      if (UseStackTemp) {
         Value *GEP = IRBEntry->CreateGEP(
             LoadFrom->getValueType(), LoadFrom,
             {zero, BI->isConditional()
@@ -226,7 +234,7 @@ struct IndirectBranch : public FunctionPass {
                        : RealIndex});
         AllocaInst *AI = IRBEntry->CreateAlloca(GEP->getType());
         IRBEntry->CreateStore(GEP, AI);
-        if (!EncryptJumpTarget)
+        if (!EncryptJumpTargetTemp)
           LI = IRBBI->CreateLoad(
               Int8PtrTy, IRBEntry->CreateLoad(AI->getAllocatedType(), AI),
               "IndirectBranchingTargetAddress");
@@ -236,13 +244,13 @@ struct IndirectBranch : public FunctionPass {
       } else {
         Value *GEP = IRBBI->CreateGEP(LoadFrom->getValueType(), LoadFrom,
                                       {zero, RealIndex});
-        if (!EncryptJumpTarget)
+        if (!EncryptJumpTargetTemp)
           LI = IRBBI->CreateLoad(Int8PtrTy, GEP,
                                  "IndirectBranchingTargetAddress");
         else
           gepptr = IRBBI->CreateLoad(Int8PtrTy, GEP);
       }
-      if (EncryptJumpTarget) {
+      if (EncryptJumpTargetTemp) {
         ConstantInt *encenckey = cast<ConstantInt>(
             ConstantInt::get(Int32Ty, cryptoutils->get_uint32_t()));
         GlobalVariable *enckeyGV = new GlobalVariable(

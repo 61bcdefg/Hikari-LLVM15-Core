@@ -52,14 +52,17 @@ static cl::opt<std::string>
 
 static cl::opt<bool> CheckInlineHook("ah_inline", cl::init(true), cl::NotHidden,
                                      cl::desc("Check Inline Hook for AArch64"));
+static bool CheckInlineHookTemp = true;
 
 static cl::opt<bool>
     CheckObjectiveCRuntimeHook("ah_objcruntime", cl::init(true), cl::NotHidden,
                                cl::desc("Check Objective-C Runtime Hook"));
+static bool CheckObjectiveCRuntimeHookTemp = true;
 
 static cl::opt<bool> AntiRebindSymbol("ah_antirebind", cl::init(false),
                                       cl::NotHidden,
                                       cl::desc("Make fishhook unavailable"));
+static bool AntiRebindSymbolTemp = false;
 
 namespace llvm {
 struct AntiHook : public ModulePass {
@@ -105,8 +108,7 @@ struct AntiHook : public ModulePass {
     this->opaquepointers = !M.getContext().supportsTypedPointers();
     this->appleptrauth = hasApplePtrauth(&M);
     this->triple = Triple(M.getTargetTriple());
-    if (triple.getVendor() == Triple::VendorType::Apple &&
-        CheckObjectiveCRuntimeHook) {
+    if (triple.getVendor() == Triple::VendorType::Apple) {
       for (GlobalVariable &GV : M.globals()) {
         if (GV.hasName() && GV.hasInitializer() &&
             (GV.getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
@@ -148,10 +150,14 @@ struct AntiHook : public ModulePass {
     for (Function &F : M) {
       if (toObfuscate(flag, &F, "antihook")) {
         errs() << "Running AntiHooking On " << F.getName() << "\n";
-        if (triple.isAArch64() && CheckInlineHook) {
+        if (!toObfuscateBoolOption(&F, "ah_inline", &CheckInlineHookTemp))
+          CheckInlineHookTemp = CheckInlineHook;
+        if (triple.isAArch64() && CheckInlineHookTemp) {
           HandleInlineHookAArch64(&F);
         }
-        if (AntiRebindSymbol)
+        if (!toObfuscateBoolOption(&F, "ah_antirebind", &AntiRebindSymbolTemp))
+          AntiRebindSymbolTemp = AntiRebindSymbol;
+        if (AntiRebindSymbolTemp)
           for (Instruction &I : instructions(F))
             if (isa<CallInst>(&I) || isa<InvokeInst>(&I)) {
               CallSite CS(&I);
@@ -222,6 +228,11 @@ struct AntiHook : public ModulePass {
                 : opaquepointers ? methodStruct->getOperand(2)
                                  : methodStruct->getOperand(2)->getOperand(0));
             if (!toObfuscate(flag, IMPFunc, "antihook"))
+              continue;
+            if (!toObfuscateBoolOption(IMPFunc, "ah_objcruntime",
+                                       &CheckObjectiveCRuntimeHookTemp))
+              CheckObjectiveCRuntimeHookTemp = CheckObjectiveCRuntimeHook;
+            if (!CheckObjectiveCRuntimeHookTemp)
               continue;
             HandleObjcRuntimeHook(IMPFunc, classname, selname, classmethod);
           }

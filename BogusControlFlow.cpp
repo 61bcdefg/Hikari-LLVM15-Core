@@ -103,46 +103,59 @@
 using namespace llvm;
 
 // Options for the pass
-static const int defaultObfRate = 70, defaultObfTime = 1;
+static const uint32_t defaultObfRate = 70, defaultObfTime = 1;
 
-static cl::opt<int>
+static cl::opt<uint32_t>
     ObfProbRate("bcf_prob",
                 cl::desc("Choose the probability [%] each basic blocks will be "
                          "obfuscated by the -bcf pass"),
                 cl::value_desc("probability rate"), cl::init(defaultObfRate),
                 cl::Optional);
+static uint32_t ObfProbRateTemp = defaultObfRate;
 
-static cl::opt<int>
+static cl::opt<uint32_t>
     ObfTimes("bcf_loop",
              cl::desc("Choose how many time the -bcf pass loop on a function"),
              cl::value_desc("number of times"), cl::init(defaultObfTime),
              cl::Optional);
-static cl::opt<int> ConditionExpressionComplexity(
+static uint32_t ObfTimesTemp = defaultObfTime;
+
+static cl::opt<uint32_t> ConditionExpressionComplexity(
     "bcf_cond_compl",
     cl::desc("The complexity of the expression used to generate branching "
              "condition"),
     cl::value_desc("Complexity"), cl::init(3), cl::Optional);
+static uint32_t ConditionExpressionComplexityTemp = 3;
 
 static cl::opt<bool>
     OnlyJunkAssembly("bcf_onlyjunkasm",
                      cl::desc("only add junk assembly to altered basic block"),
                      cl::value_desc("only add junk assembly"), cl::init(false),
                      cl::Optional);
+static bool OnlyJunkAssemblyTemp = false;
+
 static cl::opt<bool> JunkAssembly(
     "bcf_junkasm",
     cl::desc("Whether to add junk assembly to altered basic block"),
     cl::value_desc("add junk assembly"), cl::init(false), cl::Optional);
-static cl::opt<int> MaxNumberOfJunkAssembly(
+static bool JunkAssemblyTemp = false;
+
+static cl::opt<uint32_t> MaxNumberOfJunkAssembly(
     "bcf_junkasm_maxnum",
     cl::desc("The maximum number of junk assembliy per altered basic block"),
     cl::value_desc("max number of junk assembly"), cl::init(4), cl::Optional);
-static cl::opt<int> MinNumberOfJunkAssembly(
+static uint32_t MaxNumberOfJunkAssemblyTemp = 4;
+
+static cl::opt<uint32_t> MinNumberOfJunkAssembly(
     "bcf_junkasm_minnum",
     cl::desc("The minimum number of junk assembliy per altered basic block"),
     cl::value_desc("min number of junk assembly"), cl::init(2), cl::Optional);
+static uint32_t MinNumberOfJunkAssemblyTemp = 2;
+
 static cl::opt<bool> CreateFunctionForOpaquePredicate(
     "bcf_createfunc", cl::desc("Create function for each opaque predicate"),
     cl::value_desc("create function"), cl::init(false), cl::Optional);
+static bool CreateFunctionForOpaquePredicateTemp = false;
 
 static const Instruction::BinaryOps ops[] = {
     Instruction::Add, Instruction::Sub, Instruction::And, Instruction::Or,
@@ -189,11 +202,17 @@ struct BogusControlFlow : public FunctionPass {
    * to the function. See header for more details.
    */
   bool runOnFunction(Function &F) override {
+    if (!toObfuscateUint32Option(&F, "bcf_loop", &ObfTimesTemp))
+      ObfTimesTemp = ObfTimes;
+
     // Check if the percentage is correct
-    if (ObfTimes <= 0) {
+    if (ObfTimesTemp <= 0) {
       errs() << "BogusControlFlow application number -bcf_loop=x must be x > 0";
       return false;
     }
+
+    if (!toObfuscateUint32Option(&F, "bcf_prob", &ObfProbRateTemp))
+      ObfProbRateTemp = ObfProbRate;
 
     // Check if the number of applications is correct
     if (!((ObfProbRate > 0) && (ObfProbRate <= 100))) {
@@ -202,8 +221,15 @@ struct BogusControlFlow : public FunctionPass {
       return false;
     }
 
+    if (!toObfuscateUint32Option(&F, "bcf_junkasm_maxnum",
+                                 &MaxNumberOfJunkAssemblyTemp))
+      MaxNumberOfJunkAssemblyTemp = MaxNumberOfJunkAssembly;
+    if (!toObfuscateUint32Option(&F, "bcf_junkasm_minnum",
+                                 &MinNumberOfJunkAssemblyTemp))
+      MinNumberOfJunkAssemblyTemp = MinNumberOfJunkAssembly;
+
     // Check if the number of applications is correct
-    if (MaxNumberOfJunkAssembly < MinNumberOfJunkAssembly) {
+    if (MaxNumberOfJunkAssemblyTemp < MinNumberOfJunkAssemblyTemp) {
       errs() << "BogusControlFlow application numbers of junk asm "
                 "-bcf_junkasm_maxnum=x must be x >= bcf_junkasm_minnum";
       return false;
@@ -211,7 +237,7 @@ struct BogusControlFlow : public FunctionPass {
 
     // If fla annotations
     if (toObfuscate(flag, &F, "bcf") && !F.isPresplitCoroutine() &&
-        readAnnotate(&F).find("bcfopfunc") == std::string::npos) {
+        !readAnnotationMetadata(&F, "bcfopfunc")) {
       errs() << "Running BogusControlFlow On " << F.getName() << "\n";
       bogus(F);
       doF(F);
@@ -221,7 +247,12 @@ struct BogusControlFlow : public FunctionPass {
   } // end of runOnFunction()
 
   void bogus(Function &F) {
-    int NumObfTimes = ObfTimes;
+    if (!toObfuscateBoolOption(&F, "bcf_junkasm", &JunkAssemblyTemp))
+      JunkAssemblyTemp = JunkAssembly;
+    if (!toObfuscateBoolOption(&F, "bcf_onlyjunkasm", &OnlyJunkAssemblyTemp))
+      OnlyJunkAssemblyTemp = OnlyJunkAssembly;
+
+    uint32_t NumObfTimes = ObfTimesTemp;
 
     // Real begining of the pass
     // Loop for the number of time we run the pass on the function
@@ -234,7 +265,7 @@ struct BogusControlFlow : public FunctionPass {
 
       while (!basicBlocks.empty()) {
         // Basic Blocks' selection
-        if ((int)cryptoutils->get_range(100) <= ObfProbRate) {
+        if (cryptoutils->get_range(100) <= ObfProbRateTemp) {
           // Add bogus flow to the given Basic Block (see description)
           BasicBlock *basicBlock = basicBlocks.front();
           addBogusFlow(basicBlock, F);
@@ -301,7 +332,7 @@ struct BogusControlFlow : public FunctionPass {
     // Now that all the blocks are created,
     // we modify the terminators to adjust the control flow.
 
-    if (!OnlyJunkAssembly)
+    if (!OnlyJunkAssemblyTemp)
       alteredBB->getTerminator()->eraseFromParent();
     basicBlock->getTerminator()->eraseFromParent();
 
@@ -373,9 +404,10 @@ struct BogusControlFlow : public FunctionPass {
   BasicBlock *createAlteredBasicBlock(BasicBlock *basicBlock,
                                       const Twine &Name = "gen",
                                       Function *F = nullptr) {
-    BasicBlock *alteredBB =
-        OnlyJunkAssembly ? BasicBlock::Create(F->getContext(), "", F) : nullptr;
-    if (!OnlyJunkAssembly) {
+    BasicBlock *alteredBB = OnlyJunkAssemblyTemp
+                                ? BasicBlock::Create(F->getContext(), "", F)
+                                : nullptr;
+    if (!OnlyJunkAssemblyTemp) {
       // Useful to remap the informations concerning instructions.
       ValueToValueMapTy VMap;
       alteredBB = CloneBasicBlock(basicBlock, VMap, Name, F);
@@ -601,10 +633,10 @@ struct BogusControlFlow : public FunctionPass {
         }
       }
     }
-    if (JunkAssembly || OnlyJunkAssembly) {
+    if (JunkAssemblyTemp || OnlyJunkAssemblyTemp) {
       std::string junk = "";
-      for (uint32_t i = cryptoutils->get_range(MinNumberOfJunkAssembly,
-                                               MaxNumberOfJunkAssembly);
+      for (uint32_t i = cryptoutils->get_range(MinNumberOfJunkAssemblyTemp,
+                                               MaxNumberOfJunkAssemblyTemp);
            i > 0; i--)
         junk += ".long " + std::to_string(cryptoutils->get_uint32_t()) + "\n";
       InlineAsm *IA = InlineAsm::get(
@@ -627,6 +659,13 @@ struct BogusControlFlow : public FunctionPass {
    * of the function.
    */
   bool doF(Function &F) {
+    if (!toObfuscateBoolOption(&F, "bcf_createfunc",
+                               &CreateFunctionForOpaquePredicateTemp))
+      CreateFunctionForOpaquePredicateTemp = CreateFunctionForOpaquePredicate;
+    if (!toObfuscateUint32Option(&F, "bcf_cond_compl",
+                                 &ConditionExpressionComplexityTemp))
+      ConditionExpressionComplexityTemp = ConditionExpressionComplexity;
+
     std::vector<Instruction *> toEdit, toDelete;
     // Looking for the conditions and branches to transform
     for (BasicBlock &BB : F) {
@@ -659,7 +698,7 @@ struct BogusControlFlow : public FunctionPass {
 
       Function *opFunction = nullptr;
       IRBuilder<> *IRBOp = nullptr;
-      if (CreateFunctionForOpaquePredicate) {
+      if (CreateFunctionForOpaquePredicateTemp) {
         opFunction = Function::Create(FunctionType::get(I1Ty, false),
                                       GlobalValue::LinkageTypes::PrivateLinkage,
                                       "HikariBCFOpaquePredicateFunction", M);
@@ -669,7 +708,7 @@ struct BogusControlFlow : public FunctionPass {
             BasicBlock::Create(opFunction->getContext(), "", opFunction);
         // Insert a br to make it can be obfuscated by IndirectBranch
         BranchInst::Create(opEntryBlock, opTrampBlock);
-        writeAnnotate(opFunction, "bcfopfunc");
+        writeAnnotationMetadata(opFunction, "bcfopfunc");
         IRBOp = new IRBuilder<>(opEntryBlock);
       }
       Instruction *tmp = &*(i->getParent()->getFirstNonPHIOrDbgOrLifetime());
@@ -689,10 +728,10 @@ struct BogusControlFlow : public FunctionPass {
           new GlobalVariable(M, Type::getInt32Ty(M.getContext()), false,
                              GlobalValue::PrivateLinkage, RHSC, "RHSGV");
       LoadInst *LHS =
-          (CreateFunctionForOpaquePredicate ? IRBOp : IRBReal)
+          (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
               ->CreateLoad(LHSGV->getValueType(), LHSGV, "Initial LHS");
       LoadInst *RHS =
-          (CreateFunctionForOpaquePredicate ? IRBOp : IRBReal)
+          (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
               ->CreateLoad(RHSGV->getValueType(), RHSGV, "Initial LHS");
 
       // To Speed-Up Evaluation
@@ -702,22 +741,22 @@ struct BogusControlFlow : public FunctionPass {
           ops[cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
       Value *emuLast =
           IRBEmu.CreateBinOp(initialOp, emuLHS, emuRHS, "EmuInitialCondition");
-      Value *Last = (CreateFunctionForOpaquePredicate ? IRBOp : IRBReal)
+      Value *Last = (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
                         ->CreateBinOp(initialOp, LHS, RHS, "InitialCondition");
-      for (int i = 0; i < ConditionExpressionComplexity; i++) {
+      for (uint32_t i = 0; i < ConditionExpressionComplexityTemp; i++) {
         Constant *newTmp =
             ConstantInt::get(I32Ty, cryptoutils->get_range(1, UINT32_MAX));
         Instruction::BinaryOps initialOp2 =
             ops[cryptoutils->get_range(sizeof(ops) / sizeof(ops[0]))];
         emuLast = IRBEmu.CreateBinOp(initialOp2, emuLast, newTmp,
                                      "EmuInitialCondition");
-        Last = (CreateFunctionForOpaquePredicate ? IRBOp : IRBReal)
+        Last = (CreateFunctionForOpaquePredicateTemp ? IRBOp : IRBReal)
                    ->CreateBinOp(initialOp2, Last, newTmp, "InitialCondition");
       }
       // Randomly Generate Predicate
       CmpInst::Predicate pred =
           preds[cryptoutils->get_range(sizeof(preds) / sizeof(preds[0]))];
-      if (CreateFunctionForOpaquePredicate) {
+      if (CreateFunctionForOpaquePredicateTemp) {
         IRBOp->CreateRet(IRBOp->CreateICmp(pred, Last, RealRHS));
         Last = IRBReal->CreateCall(opFunction);
       } else

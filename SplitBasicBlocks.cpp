@@ -9,9 +9,9 @@
 
 using namespace llvm;
 
-static cl::opt<size_t>
-    s_user_split_num("split_num", cl::init(2),
-                     cl::desc("Split <split_num> time each BB"));
+static cl::opt<uint32_t> SplitNum("split_num", cl::init(2),
+                                  cl::desc("Split <split_num> time each BB"));
+static uint32_t SplitNumTemp = 2;
 
 namespace {
 struct SplitBasicBlock : public FunctionPass {
@@ -21,8 +21,11 @@ struct SplitBasicBlock : public FunctionPass {
   SplitBasicBlock(bool flag) : FunctionPass(ID) { this->flag = flag; }
 
   bool runOnFunction(Function &F) override {
+    if (!toObfuscateUint32Option(&F, "split_num", &SplitNumTemp))
+      SplitNumTemp = SplitNum;
+
     // Check if the number of applications is correct
-    if (!((s_user_split_num > 1) && (s_user_split_num <= 10))) {
+    if (!((SplitNumTemp > 1) && (SplitNumTemp <= 10))) {
       errs()
           << "Split application basic block percentage -split_num=x must be 1 "
              "< x <= 10";
@@ -50,10 +53,10 @@ struct SplitBasicBlock : public FunctionPass {
           containsSwiftError(currBB))
         continue;
 
-      if (s_user_split_num > currBB->size() - 1)
+      if ((size_t)SplitNumTemp > currBB->size() - 1)
         split_ctr = currBB->size() - 1;
       else
-        split_ctr = s_user_split_num;
+        split_ctr = (size_t)SplitNumTemp;
 
       // Generate splits point (count number of the LLVM instructions in the
       // current BB)
