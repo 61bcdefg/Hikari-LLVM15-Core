@@ -44,7 +44,7 @@ bool Flattening::flatten(Function *f) {
   BasicBlock *loopEntry, *loopEnd;
   LoadInst *load;
   SwitchInst *switchI;
-  AllocaInst *switchVar;
+  AllocaInst *switchVar, *switchVarAddr;
 
   // SCRAMBLER
   std::map<uint32_t, uint32_t> scrambling_key;
@@ -87,10 +87,13 @@ bool Flattening::flatten(Function *f) {
   // Create switch variable and set as it
   switchVar = new AllocaInst(Type::getInt32Ty(f->getContext()), 0, "switchVar",
                              oldTerm);
+  switchVarAddr =
+      new AllocaInst(Type::getInt32PtrTy(f->getContext()), 0, "", oldTerm);
   oldTerm->eraseFromParent();
   new StoreInst(ConstantInt::get(Type::getInt32Ty(f->getContext()),
                                  cryptoutils->scramble32(0, scrambling_key)),
                 switchVar, insert);
+  new StoreInst(switchVar, switchVarAddr, insert);
 
   // Create main loop
   loopEntry = BasicBlock::Create(f->getContext(), "loopEntry", f, insert);
@@ -153,7 +156,10 @@ bool Flattening::flatten(Function *f) {
       }
 
       // Update switchVar and jump to the end of loop
-      new StoreInst(numCase, load->getPointerOperand(), i);
+      new StoreInst(
+          numCase,
+          new LoadInst(switchVarAddr->getAllocatedType(), switchVarAddr, "", i),
+          i);
       BranchInst::Create(loopEnd, i);
       continue;
     }
@@ -190,7 +196,10 @@ bool Flattening::flatten(Function *f) {
       // Erase terminator
       i->getTerminator()->eraseFromParent();
       // Update switchVar and jump to the end of loop
-      new StoreInst(sel, load->getPointerOperand(), i);
+      new StoreInst(
+          sel,
+          new LoadInst(switchVarAddr->getAllocatedType(), switchVarAddr, "", i),
+          i);
       BranchInst::Create(loopEnd, i);
       continue;
     }
