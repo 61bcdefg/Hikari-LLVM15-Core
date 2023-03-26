@@ -272,7 +272,23 @@ struct IndirectBranch : public FunctionPass {
         indirBr->addDestination(BB);
       ReplaceInstWithInst(BI, indirBr);
     }
+    shuffleBasicBlocks(Func);
     return true;
+  }
+  void shuffleBasicBlocks(Function &F) {
+    std::vector<BasicBlock *> blocks;
+    for (BasicBlock &block : F)
+      if (!block.isEntryBlock())
+        blocks.emplace_back(&block);
+
+    for (int i = blocks.size() - 1; i > 0; i--)
+      std::swap(blocks[i], blocks[cryptoutils->get_range(i + 1)]);
+
+    Function::iterator fi = F.begin();
+    for (BasicBlock *block : blocks) {
+      fi++;
+      block->moveAfter(&*(fi));
+    }
   }
 };
 } // namespace llvm
