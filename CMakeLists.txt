@@ -1,54 +1,23 @@
-if (NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
-    add_llvm_component_library(LLVMObfuscation
-            FunctionCallObfuscate.cpp
-            CryptoUtils.cpp
-            BogusControlFlow.cpp
-            SubstituteImpl.cpp
-            Substitution.cpp
-            Flattening.cpp
-            Utils.cpp
-            SplitBasicBlocks.cpp
-            AntiClassDump.cpp
-            AntiDebugging.cpp
-            AntiHooking.cpp
-            StringEncryption.cpp
-            IndirectBranch.cpp
-            FunctionWrapper.cpp
-            ConstantEncryption.cpp
-            Obfuscation.cpp
-            DEPENDS
-            intrinsics_gen
-
-            LINK_COMPONENTS
-            Core
-            IRReader
-            Linker
-            Passes
-            Support
-            TransformUtils
-            )
-else()
-    add_llvm_component_library(LLVMObfuscation
-            FunctionCallObfuscate.cpp
-            CryptoUtils.cpp
-            BogusControlFlow.cpp
-            SubstituteImpl.cpp
-            Substitution.cpp
-            Flattening.cpp
-            Utils.cpp
-            SplitBasicBlocks.cpp
-            AntiClassDump.cpp
-            AntiDebugging.cpp
-            AntiHooking.cpp
-            StringEncryption.cpp
-            IndirectBranch.cpp
-            FunctionWrapper.cpp
-            ConstantEncryption.cpp
-            Obfuscation.cpp
-            DEPENDS
-            intrinsics_gen
-            )
-endif()
+add_llvm_component_library(LLVMObfuscation
+        FunctionCallObfuscate.cpp
+        CryptoUtils.cpp
+        BogusControlFlow.cpp
+        SubstituteImpl.cpp
+        Substitution.cpp
+        Flattening.cpp
+        Utils.cpp
+        SplitBasicBlocks.cpp
+        AntiClassDump.cpp
+        AntiDebugging.cpp
+        AntiHooking.cpp
+        StringEncryption.cpp
+        IndirectBranch.cpp
+        FunctionWrapper.cpp
+        ConstantEncryption.cpp
+        Obfuscation.cpp
+        DEPENDS
+        intrinsics_gen
+        )
 execute_process(
   COMMAND git log -1 --format=%H
   WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
