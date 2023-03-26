@@ -68,20 +68,20 @@ namespace llvm {
 struct AntiHook : public ModulePass {
   static char ID;
   bool flag;
-  bool appleptrauth;
+  bool initialized;
   bool opaquepointers;
-  bool hasobjcmethod;
   Triple triple;
   AntiHook() : ModulePass(ID) {
     this->flag = true;
-    this->hasobjcmethod = false;
+    this->initialized = false;
   }
   AntiHook(bool flag) : ModulePass(ID) {
     this->flag = flag;
-    this->hasobjcmethod = false;
+    this->initialized = false;
   }
   StringRef getPassName() const override { return "AntiHook"; }
-  bool doInitialization(Module &M) override {
+  bool initialize(Module &M) {
+    this->triple = Triple(M.getTargetTriple());
     if (PreCompiledIRPath == "") {
       SmallString<32> Path;
       if (sys::path::home_directory(Path)) { // Stolen from LineEditor.cpp
@@ -106,50 +106,43 @@ struct AntiHook : public ModulePass {
              << PreCompiledIRPath << "\n";
     }
     this->opaquepointers = !M.getContext().supportsTypedPointers();
-    this->appleptrauth = hasApplePtrauth(&M);
-    this->triple = Triple(M.getTargetTriple());
-    if (triple.getVendor() == Triple::VendorType::Apple) {
-      for (GlobalVariable &GV : M.globals()) {
-        if (GV.hasName() && GV.hasInitializer() &&
-            (GV.getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
-             GV.getName().startswith("_OBJC_$_CLASS_METHODS"))) {
-          hasobjcmethod = true;
-          break;
-        }
-      }
-      if (hasobjcmethod) {
-        Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
-        M.getOrInsertFunction("objc_getClass",
-                              FunctionType::get(Int8PtrTy, {Int8PtrTy}, false));
-        M.getOrInsertFunction("sel_registerName",
-                              FunctionType::get(Int8PtrTy, {Int8PtrTy}, false));
-        FunctionType *IMPType =
-            FunctionType::get(Int8PtrTy, {Int8PtrTy, Int8PtrTy}, true);
-        PointerType *IMPPointerType = PointerType::getUnqual(IMPType);
-        M.getOrInsertFunction(
-            "method_getImplementation",
-            FunctionType::get(IMPPointerType,
-                              {PointerType::getUnqual(StructType::getTypeByName(
-                                  M.getContext(), "struct._objc_method"))},
-                              false));
-        M.getOrInsertFunction(
-            "class_getInstanceMethod",
-            FunctionType::get(PointerType::getUnqual(StructType::getTypeByName(
-                                  M.getContext(), "struct._objc_method")),
-                              {Int8PtrTy, Int8PtrTy}, false));
-        M.getOrInsertFunction(
-            "class_getClassMethod",
-            FunctionType::get(PointerType::getUnqual(StructType::getTypeByName(
-                                  M.getContext(), "struct._objc_method")),
-                              {Int8PtrTy, Int8PtrTy}, false));
-      }
+
+    if (triple.getVendor() == Triple::VendorType::Apple &&
+        StructType::getTypeByName(M.getContext(), "struct._objc_method")) {
+      Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
+      M.getOrInsertFunction("objc_getClass",
+                            FunctionType::get(Int8PtrTy, {Int8PtrTy}, false));
+      M.getOrInsertFunction("sel_registerName",
+                            FunctionType::get(Int8PtrTy, {Int8PtrTy}, false));
+      FunctionType *IMPType =
+          FunctionType::get(Int8PtrTy, {Int8PtrTy, Int8PtrTy}, true);
+      PointerType *IMPPointerType = PointerType::getUnqual(IMPType);
+      M.getOrInsertFunction(
+          "method_getImplementation",
+          FunctionType::get(IMPPointerType,
+                            {PointerType::getUnqual(StructType::getTypeByName(
+                                M.getContext(), "struct._objc_method"))},
+                            false));
+      M.getOrInsertFunction(
+          "class_getInstanceMethod",
+          FunctionType::get(PointerType::getUnqual(StructType::getTypeByName(
+                                M.getContext(), "struct._objc_method")),
+                            {Int8PtrTy, Int8PtrTy}, false));
+      M.getOrInsertFunction(
+          "class_getClassMethod",
+          FunctionType::get(PointerType::getUnqual(StructType::getTypeByName(
+                                M.getContext(), "struct._objc_method")),
+                            {Int8PtrTy, Int8PtrTy}, false));
     }
     return true;
   }
+
   bool runOnModule(Module &M) override {
     for (Function &F : M) {
       if (toObfuscate(flag, &F, "antihook")) {
         errs() << "Running AntiHooking On " << F.getName() << "\n";
+        if (!this->initialized)
+          initialize(M);
         if (!toObfuscateBoolOption(&F, "ah_inline", &CheckInlineHookTemp))
           CheckInlineHookTemp = CheckInlineHook;
         if (triple.isAArch64() && CheckInlineHookTemp) {
@@ -185,57 +178,52 @@ struct AntiHook : public ModulePass {
                 CS.setCalledFunction(BitCasted);
               }
             }
-      }
-    }
-    if (hasobjcmethod) {
-      for (GlobalVariable &GV : M.globals()) {
-        if (GV.hasName() && GV.hasInitializer() &&
-            GV.getSection() != "llvm.ptrauth" &&
-            (GV.getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
-             GV.getName().startswith("_OBJC_$_CLASS_METHODS"))) {
-          GlobalVariable *methodListGV = &GV;
-          ConstantStruct *methodListStruct =
-              cast<ConstantStruct>(methodListGV->getInitializer());
-          ConstantArray *method_list =
-              cast<ConstantArray>(methodListStruct->getOperand(2));
-          for (unsigned i = 0; i < method_list->getNumOperands(); i++) {
-            ConstantStruct *methodStruct =
-                cast<ConstantStruct>(method_list->getOperand(i));
-            GlobalVariable *SELNameGV = cast<GlobalVariable>(
-                opaquepointers ? methodStruct->getOperand(0)
-                               : methodStruct->getOperand(0)->getOperand(0));
-            ConstantDataSequential *SELNameCDS =
-                cast<ConstantDataSequential>(SELNameGV->getInitializer());
-            bool classmethod = GV.getName().startswith("_OBJC_$_CLASS_METHODS");
-            std::string classname =
-                GV.getName()
-                    .substr(strlen(classmethod ? "_OBJC_$_CLASS_METHODS_"
-                                               : "_OBJC_$_INSTANCE_METHODS_"))
-                    .str();
-            std::string selname = SELNameCDS->getAsCString().str();
-            Function *IMPFunc = cast<Function>(
-                appleptrauth
-                    ? opaquepointers
-                          ? cast<GlobalVariable>(methodStruct->getOperand(2))
-                                ->getInitializer()
-                                ->getOperand(0)
-                          : cast<ConstantExpr>(
-                                cast<GlobalVariable>(
-                                    methodStruct->getOperand(2)->getOperand(0))
-                                    ->getInitializer()
-                                    ->getOperand(0))
-                                ->getOperand(0)
-                : opaquepointers ? methodStruct->getOperand(2)
-                                 : methodStruct->getOperand(2)->getOperand(0));
-            if (!toObfuscate(flag, IMPFunc, "antihook"))
-              continue;
-            if (!toObfuscateBoolOption(IMPFunc, "ah_objcruntime",
-                                       &CheckObjectiveCRuntimeHookTemp))
-              CheckObjectiveCRuntimeHookTemp = CheckObjectiveCRuntimeHook;
-            if (!CheckObjectiveCRuntimeHookTemp)
-              continue;
-            HandleObjcRuntimeHook(IMPFunc, classname, selname, classmethod);
+        if (!toObfuscateBoolOption(&F, "ah_objcruntime",
+                                   &CheckObjectiveCRuntimeHookTemp))
+          CheckObjectiveCRuntimeHookTemp = CheckObjectiveCRuntimeHook;
+        if (!CheckObjectiveCRuntimeHookTemp)
+          continue;
+        GlobalVariable *methodListGV = nullptr;
+        ConstantStruct *methodStruct = nullptr;
+        for (User *U : F.users()) {
+          if (opaquepointers)
+            if (ConstantStruct *CS = dyn_cast<ConstantStruct>(U))
+              if (CS->getType()->getName() == "struct._objc_method")
+                methodStruct = CS;
+          for (User *U2 : U->users()) {
+            if (!opaquepointers)
+              if (ConstantStruct *CS = dyn_cast<ConstantStruct>(U2))
+                if (CS->getType()->getName() == "struct._objc_method")
+                  methodStruct = CS;
+            for (User *U3 : U2->users())
+              for (User *U4 : U3->users()) {
+                if (opaquepointers) {
+                  if (U4->getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
+                      U4->getName().startswith("_OBJC_$_CLASS_METHODS"))
+                    methodListGV = dyn_cast<GlobalVariable>(U4);
+                } else
+                  for (User *U5 : U4->users()) {
+                    if (U5->getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
+                        U5->getName().startswith("_OBJC_$_CLASS_METHODS"))
+                      methodListGV = dyn_cast<GlobalVariable>(U5);
+                  }
+              }
           }
+        }
+        if (methodListGV && methodStruct) {
+          GlobalVariable *SELNameGV = cast<GlobalVariable>(
+              methodStruct->getOperand(0)->stripPointerCasts());
+          ConstantDataSequential *SELNameCDS =
+              cast<ConstantDataSequential>(SELNameGV->getInitializer());
+          bool classmethod =
+              methodListGV->getName().startswith("_OBJC_$_CLASS_METHODS");
+          std::string classname =
+              methodListGV->getName()
+                  .substr(strlen(classmethod ? "_OBJC_$_CLASS_METHODS_"
+                                             : "_OBJC_$_INSTANCE_METHODS_"))
+                  .str();
+          std::string selname = SELNameCDS->getAsCString().str();
+          HandleObjcRuntimeHook(&F, classname, selname, classmethod);
         }
       }
     }
