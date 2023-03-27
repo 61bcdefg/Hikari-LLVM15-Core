@@ -49,9 +49,15 @@ struct IndirectBranch : public FunctionPass {
   }
   StringRef getPassName() const override { return "IndirectBranch"; }
   bool initialize(Module &M) {
+    PassBuilder PB;
+    FunctionAnalysisManager FAM;
+    FunctionPassManager FPM;
+    PB.registerFunctionAnalyses(FAM);
+    FPM.addPass(LowerSwitchPass());
+
     std::vector<Constant *> BBs;
     unsigned long long i = 0;
-    PassBuilder PB;
+
     for (Function &F : M) {
       if (!toObfuscate(flag, &F, "indibr"))
         continue;
@@ -61,10 +67,6 @@ struct IndirectBranch : public FunctionPass {
         turnOffOptimization(&F);
 
       // See https://github.com/61bcdefg/Hikari-LLVM15/issues/32
-      FunctionAnalysisManager FAM;
-      FunctionPassManager FPM;
-      PB.registerFunctionAnalyses(FAM);
-      FPM.addPass(LowerSwitchPass());
       FPM.run(F, FAM);
 
       if (!toObfuscateBoolOption(&F, "indibran_enc_jump_target",
@@ -287,7 +289,7 @@ struct IndirectBranch : public FunctionPass {
     Function::iterator fi = F.begin();
     for (BasicBlock *block : blocks) {
       fi++;
-      block->moveAfter(&*(fi));
+      block->moveAfter(&*fi);
     }
   }
 };

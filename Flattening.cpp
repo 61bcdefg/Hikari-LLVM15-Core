@@ -29,9 +29,7 @@ INITIALIZE_PASS(Flattening, "cffobf", "Enable Control Flow Flattening.", false,
 bool Flattening::runOnFunction(Function &F) {
   Function *tmp = &F;
   // Do we obfuscate
-  if (toObfuscate(flag, tmp, "fla")) {
-    if (F.isPresplitCoroutine())
-      return false;
+  if (toObfuscate(flag, tmp, "fla") && !F.isPresplitCoroutine()) {
     errs() << "Running ControlFlowFlattening On " << F.getName() << "\n";
     flatten(tmp);
   }
