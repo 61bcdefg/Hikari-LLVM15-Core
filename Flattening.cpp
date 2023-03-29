@@ -43,6 +43,7 @@ bool Flattening::flatten(Function *f) {
   LoadInst *load;
   SwitchInst *switchI;
   AllocaInst *switchVar, *switchVarAddr;
+  const DataLayout &DL = f->getParent()->getDataLayout();
 
   // SCRAMBLER
   std::map<uint32_t, uint32_t> scrambling_key;
@@ -83,10 +84,10 @@ bool Flattening::flatten(Function *f) {
   Instruction *oldTerm = insert->getTerminator();
 
   // Create switch variable and set as it
-  switchVar = new AllocaInst(Type::getInt32Ty(f->getContext()), 0, "switchVar",
-                             oldTerm);
-  switchVarAddr =
-      new AllocaInst(Type::getInt32PtrTy(f->getContext()), 0, "", oldTerm);
+  switchVar = new AllocaInst(Type::getInt32Ty(f->getContext()),
+                             DL.getAllocaAddrSpace(), "switchVar", oldTerm);
+  switchVarAddr = new AllocaInst(Type::getInt32PtrTy(f->getContext()),
+                                 DL.getAllocaAddrSpace(), "", oldTerm);
   oldTerm->eraseFromParent();
   new StoreInst(ConstantInt::get(Type::getInt32Ty(f->getContext()),
                                  cryptoutils->scramble32(0, scrambling_key)),
