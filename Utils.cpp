@@ -16,18 +16,13 @@ using namespace llvm;
 
 namespace llvm {
 
-// Shamefully borrowed from ../Scalar/RegToMem.cpp and .../IR/Instruction.cpp :(
+// Shamefully borrowed from ../Scalar/RegToMem.cpp :(
 static bool valueEscapes(Instruction *Inst) {
-  for (User *U : Inst->users()) {
-    Instruction *I = cast<Instruction>(U);
-    if (I->getParent() != Inst->getParent()) {
-      if (!isa<PHINode>(I)) {
-        if (isa<StoreInst>(I) && isa<InvokeInst>(Inst))
-          if (I->getParent() == dyn_cast<InvokeInst>(Inst)->getNormalDest() &&
-              isa<AllocaInst>(I->getOperand(1)))
-            continue;
-        return true;
-      }
+  BasicBlock *BB = Inst->getParent();
+  for (Value::use_iterator UI = Inst->use_begin(), E = Inst->use_end(); UI != E;
+       ++UI) {
+    Instruction *I = cast<Instruction>(*UI);
+    if (I->getParent() != BB || isa<PHINode>(I)) {
       return true;
     }
   }
@@ -45,9 +40,7 @@ void fixStack(Function *f) {
   BasicBlock::iterator I = bbEntry->begin();
   while (isa<AllocaInst>(I))
     ++I;
-  CastInst *AllocaInsertionPoint = new BitCastInst(
-      Constant::getNullValue(Type::getInt32Ty(f->getContext())),
-      Type::getInt32Ty(f->getContext()), "reg2mem alloca point", &*I);
+  Instruction *AllocaInsertionPoint = &*I;
   do {
     tmpPhi.clear();
     tmpReg.clear();
