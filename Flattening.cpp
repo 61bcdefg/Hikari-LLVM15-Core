@@ -4,8 +4,10 @@
 #include "llvm/Transforms/Obfuscation/Flattening.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
+#include "llvm/Transforms/Utils/LowerSwitch.h"
 
 using namespace llvm;
 
@@ -40,7 +42,7 @@ bool Flattening::runOnFunction(Function &F) {
 void Flattening::flatten(Function *f) {
   std::vector<BasicBlock *> origBB, exceptPredBB, exceptSuccBB;
   BasicBlock *loopEntry, *loopEnd;
-  LoadInst *load, *loadAddr;
+  LoadInst *load;
   SwitchInst *switchI;
   AllocaInst *switchVar, *switchVarAddr;
   const DataLayout &DL = f->getParent()->getDataLayout();
@@ -49,78 +51,70 @@ void Flattening::flatten(Function *f) {
   std::map<uint32_t, uint32_t> scrambling_key;
   // END OF SCRAMBLER
 
+  PassBuilder PB;
+  FunctionAnalysisManager FAM;
+  FunctionPassManager FPM;
+  PB.registerFunctionAnalyses(FAM);
+  FPM.addPass(LowerSwitchPass());
+  FPM.run(*f, FAM);
+
   for (BasicBlock &BB : *f) {
-    if (isa<BranchInst>(BB.getTerminator()) ||
-        isa<ReturnInst>(BB.getTerminator()))
-      origBB.emplace_back(&BB);
-    else
-      for (BasicBlock *B : successors(&BB))
-        exceptSuccBB.emplace_back(B);
-  }
-  for (BasicBlock *BB : origBB)
-    for (BasicBlock *B : successors(BB)) {
-      if (std::find(origBB.begin(), origBB.end(), B) == origBB.end())
-        exceptPredBB.emplace_back(BB);
-      if (std::find(exceptSuccBB.begin(), exceptSuccBB.end(), B) !=
-          exceptSuccBB.end())
-        exceptSuccBB.erase(
-            std::find(exceptSuccBB.begin(), exceptSuccBB.end(), B));
+    if (BB.isEHPad() || BB.isLandingPad()) {
+      errs() << f->getName()
+             << " Contains Exception Handing Instructions and is unsupported "
+                "for flattening in the open-source version of Hikari.\n";
+      return;
     }
+    if (!isa<BranchInst>(BB.getTerminator()) &&
+        !isa<ReturnInst>(BB.getTerminator()))
+      return;
+  }
 
   // Nothing to flatten
   if (origBB.size() <= 1)
     return;
 
-  Function::iterator iter = f->begin();
-  BasicBlock *insert = &*f->begin();
+  // Remove first BB
+  origBB.erase(origBB.begin());
 
-  while (!isa<BranchInst>(insert->getTerminator()) ||
-         std::find(exceptPredBB.begin(), exceptPredBB.end(), insert) !=
-             exceptPredBB.end()) {
-    iter++;
-    insert = &*iter;
-    if (insert == &f->back())
-      return;
+  // Get a pointer on the first BB
+  Function::iterator tmp = f->begin();
+  BasicBlock *insert = &*tmp;
+
+  // If main begin with an if
+  BranchInst *br = nullptr;
+  if (isa<BranchInst>(insert->getTerminator()))
+    br = cast<BranchInst>(insert->getTerminator());
+
+  if ((br && br->isConditional()) ||
+      insert->getTerminator()->getNumSuccessors() > 1) {
+    BasicBlock::iterator i = insert->end();
+    --i;
+
+    if (insert->size() > 1) {
+      --i;
+    }
+
+    BasicBlock *tmpBB = insert->splitBasicBlock(i, "first");
+    origBB.insert(origBB.begin(), tmpBB);
   }
 
-  origBB.erase(std::find(origBB.begin(), origBB.end(), insert));
-
-  BasicBlock::iterator i = insert->end();
-  --i;
-  if (insert->size() > 1)
-    --i;
-  BasicBlock *tmpBB = insert->splitBasicBlock(i, "first");
-  bool tmpBBIsExceptPred = false;
-  for (BasicBlock *B : successors(tmpBB))
-    if (!(isa<BranchInst>(B->getTerminator()) ||
-          isa<ReturnInst>(B->getTerminator()))) {
-      tmpBBIsExceptPred = true;
-      break;
-    }
-  origBB.insert(origBB.begin(), tmpBB);
-  if (tmpBBIsExceptPred)
-    exceptPredBB.emplace_back(tmpBB);
-
-  BasicBlock::iterator I = f->getEntryBlock().begin();
-  while (isa<AllocaInst>(I))
-    ++I;
-  Instruction *AllocaInsertionPoint = &*I;
+  // Remove jump
+  Instruction *oldTerm = insert->getTerminator();
 
   // Create switch variable and set as it
-  switchVar =
-      new AllocaInst(Type::getInt32Ty(f->getContext()), DL.getAllocaAddrSpace(),
-                     "switchVar", AllocaInsertionPoint);
-  switchVarAddr =
-      new AllocaInst(Type::getInt32PtrTy(f->getContext()),
-                     DL.getAllocaAddrSpace(), "", AllocaInsertionPoint);
+  switchVar = new AllocaInst(Type::getInt32Ty(f->getContext()),
+                             DL.getAllocaAddrSpace(), "switchVar", oldTerm);
+  switchVarAddr = new AllocaInst(Type::getInt32PtrTy(f->getContext()),
+                                 DL.getAllocaAddrSpace(), "", oldTerm);
 
   // Remove jump
-  insert->getTerminator()->eraseFromParent();
+  oldTerm->eraseFromParent();
 
   new StoreInst(ConstantInt::get(Type::getInt32Ty(f->getContext()),
                                  cryptoutils->scramble32(0, scrambling_key)),
-                switchVar, &f->getEntryBlock().back());
-  new StoreInst(switchVar, switchVarAddr, &f->getEntryBlock().back());
+                switchVar, insert);
+  new StoreInst(switchVar, switchVarAddr, insert);
 
   // Create main loop
   loopEntry = BasicBlock::Create(f->getContext(), "loopEntry", f, insert);
@@ -133,9 +127,6 @@ void Flattening::flatten(Function *f) {
   insert->moveBefore(loopEntry);
   BranchInst::Create(loopEntry, insert);
 
-  loadAddr = new LoadInst(switchVarAddr->getAllocatedType(), switchVarAddr,
-                          "switchVarAddr", &f->getEntryBlock().back());
-
   // loopEnd jump to loopEntry
   BranchInst::Create(loopEntry, loopEnd);
 
@@ -144,14 +135,16 @@ void Flattening::flatten(Function *f) {
   BranchInst::Create(loopEnd, swDefault);
 
   // Create switch instruction itself and set condition
-  switchI = SwitchInst::Create(load, swDefault, 0, loopEntry);
+  switchI = SwitchInst::Create(&*f->begin(), swDefault, 0, loopEntry);
+  switchI->setCondition(load);
+
+  // Remove branch jump from 1st BB and make a jump to the while
+  f->begin()->getTerminator()->eraseFromParent();
+
+  BranchInst::Create(loopEntry, &*f->begin());
 
   // Put BB in the switch
   for (BasicBlock *i : origBB) {
-    if (std::find(exceptSuccBB.begin(), exceptSuccBB.end(), i) !=
-        exceptSuccBB.end())
-      continue;
-
     ConstantInt *numCase = nullptr;
 
     // Move the BB inside the switch (only visual, no code logic)
@@ -166,10 +159,6 @@ void Flattening::flatten(Function *f) {
 
   // Recalculate switchVar
   for (BasicBlock *i : origBB) {
-    if (std::find(exceptPredBB.begin(), exceptPredBB.end(), i) !=
-        exceptPredBB.end())
-      continue;
-
     ConstantInt *numCase = nullptr;
 
     // If it's a non-conditional jump
@@ -190,7 +179,10 @@ void Flattening::flatten(Function *f) {
       }
 
       // Update switchVar and jump to the end of loop
-      new StoreInst(numCase, loadAddr, i);
+      new StoreInst(
+          numCase,
+          new LoadInst(switchVarAddr->getAllocatedType(), switchVarAddr, "", i),
+          i);
       BranchInst::Create(loopEnd, i);
       continue;
     }
@@ -227,7 +219,10 @@ void Flattening::flatten(Function *f) {
       // Erase terminator
       i->getTerminator()->eraseFromParent();
       // Update switchVar and jump to the end of loop
-      new StoreInst(sel, loadAddr, i);
+      new StoreInst(
+          sel,
+          new LoadInst(switchVarAddr->getAllocatedType(), switchVarAddr, "", i),
+          i);
       BranchInst::Create(loopEnd, i);
       continue;
     }
@@ -235,7 +230,4 @@ void Flattening::flatten(Function *f) {
   errs() << "Fixing Stack\n";
   fixStack(f);
   errs() << "Fixed Stack\n";
-
-  if (exceptPredBB.size() || exceptSuccBB.size())
-    turnOffOptimization(f);
 }
