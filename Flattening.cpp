@@ -40,7 +40,7 @@ bool Flattening::runOnFunction(Function &F) {
 }
 
 void Flattening::flatten(Function *f) {
-  std::vector<BasicBlock *> origBB, exceptPredBB, exceptSuccBB;
+  std::vector<BasicBlock *> origBB;
   BasicBlock *loopEntry, *loopEnd;
   LoadInst *load;
   SwitchInst *switchI;
@@ -68,6 +68,7 @@ void Flattening::flatten(Function *f) {
     if (!isa<BranchInst>(BB.getTerminator()) &&
         !isa<ReturnInst>(BB.getTerminator()))
       return;
+    origBB.emplace_back(&BB);
   }
 
   // Nothing to flatten
