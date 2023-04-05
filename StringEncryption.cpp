@@ -25,6 +25,7 @@ namespace llvm {
 struct StringEncryption : public ModulePass {
   static char ID;
   bool flag;
+  bool appleptrauth;
   bool opaquepointers;
   std::map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
       encstatus;
@@ -77,6 +78,7 @@ struct StringEncryption : public ModulePass {
   bool runOnModule(Module &M) override {
     // in runOnModule. We simple iterate function list and dispatch functions
     // to handlers
+    this->appleptrauth = hasApplePtrauth(&M);
     this->opaquepointers = !M.getContext().supportsTypedPointers();
 
     for (Function &F : M)
@@ -371,12 +373,54 @@ struct StringEncryption : public ModulePass {
       }
     } // End Replace Uses
       // CleanUp Old ObjC GVs
-    for (GlobalVariable *GV : objCStrings)
+    for (GlobalVariable *GV : objCStrings) {
+      GlobalVariable *PtrauthGV = nullptr;
+      if (appleptrauth) {
+        Constant *C = dyn_cast_or_null<Constant>(
+            opaquepointers
+                ? GV->getInitializer()
+                : cast<ConstantExpr>(GV->getInitializer()->getOperand(0)));
+        if (C) {
+          PtrauthGV = dyn_cast<GlobalVariable>(C->getOperand(0));
+          if (PtrauthGV->getSection() == "llvm.ptrauth") {
+            if (ConstantExpr *CE = dyn_cast<ConstantExpr>(
+                    PtrauthGV->getInitializer()->getOperand(2))) {
+              if (GlobalVariable *GV2 =
+                      dyn_cast<GlobalVariable>(CE->getOperand(0))) {
+                if (GV->getNumUses() <= 1 &&
+                    GV2->getGlobalIdentifier() == GV->getGlobalIdentifier())
+                  PtrauthGV->getInitializer()->setOperand(
+                      2, ConstantExpr::getPtrToInt(
+                             M->getGlobalVariable(
+                                 "__CFConstantStringClassReference"),
+                             Type::getInt64Ty(M->getContext())));
+              }
+            } else if (GlobalVariable *GV2 = dyn_cast<GlobalVariable>(
+                           PtrauthGV->getInitializer()->getOperand(2)))
+              if (GV->getNumUses() <= 1 &&
+                  GV2->getGlobalIdentifier() == GV->getGlobalIdentifier())
+                PtrauthGV->getInitializer()->setOperand(
+                    2, ConstantExpr::getPtrToInt(
+                           M->getGlobalVariable(
+                               "__CFConstantStringClassReference"),
+                           Type::getInt64Ty(M->getContext())));
+          }
+        }
+      }
+      GV->removeDeadConstantUsers();
       if (GV->getNumUses() == 0) {
         GV->dropAllReferences();
         old2new.erase(GV);
         GV->eraseFromParent();
       }
+      if (PtrauthGV) {
+        PtrauthGV->removeDeadConstantUsers();
+        if (PtrauthGV->getNumUses() == 0) {
+          PtrauthGV->dropAllReferences();
+          PtrauthGV->eraseFromParent();
+        }
+      }
+    }
     // CleanUp Old Raw GVs
     for (std::map<GlobalVariable *,
                   std::pair<GlobalVariable *, GlobalVariable *>>::iterator
@@ -454,16 +498,11 @@ struct StringEncryption : public ModulePass {
         name, nullptr, GV->getThreadLocalMode(),
         GV->getType()->getAddressSpace());
     // for arm64e target on Apple LLVM
-    if (hasApplePtrauth(GV->getParent())) {
-      GlobalVariable *PtrauthGV = cast<GlobalVariable>(
-          cast<ConstantExpr>(newCS->getOperand(0))->getOperand(0));
-      if (PtrauthGV->getSection() == "llvm.ptrauth" &&
-          cast<GlobalVariable>(
-              opaquepointers ? PtrauthGV->getInitializer()->getOperand(2)
-                             : cast<ConstantExpr>(
-                                   PtrauthGV->getInitializer()->getOperand(2))
-                                   ->getOperand(0))
-                  ->getGlobalIdentifier() != ObjcGV->getGlobalIdentifier()) {
+    if (appleptrauth) {
+      Constant *C = dyn_cast_or_null<Constant>(
+          opaquepointers ? newCS : cast<ConstantExpr>(newCS->getOperand(0)));
+      GlobalVariable *PtrauthGV = dyn_cast<GlobalVariable>(C->getOperand(0));
+      if (PtrauthGV && PtrauthGV->getSection() == "llvm.ptrauth") {
         GlobalVariable *NewPtrauthGV = new GlobalVariable(
             *PtrauthGV->getParent(), PtrauthGV->getValueType(), true,
             PtrauthGV->getLinkage(),
@@ -477,10 +516,6 @@ struct StringEncryption : public ModulePass {
             PtrauthGV->getName(), nullptr, PtrauthGV->getThreadLocalMode());
         NewPtrauthGV->setSection("llvm.ptrauth");
         NewPtrauthGV->setAlignment(Align(8));
-        if (PtrauthGV->getNumUses() == 0) {
-          PtrauthGV->dropAllReferences();
-          PtrauthGV->eraseFromParent();
-        }
         ObjcGV->getInitializer()->setOperand(
             0,
             ConstantExpr::getBitCast(
@@ -494,7 +529,7 @@ struct StringEncryption : public ModulePass {
       BasicBlock *B, BasicBlock *C,
       std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>>
           &GV2Keys) {
-    IRBuilder<NoFolder> IRB(B);
+    IRBuilder<> IRB(B);
     Value *zero = ConstantInt::get(Type::getInt32Ty(B->getContext()), 0);
     for (std::map<GlobalVariable *,
                   std::pair<Constant *, GlobalVariable *>>::iterator iter =
