@@ -260,7 +260,8 @@ struct BogusControlFlow : public FunctionPass {
       // Put all the function's block in a list
       std::list<BasicBlock *> basicBlocks;
       for (BasicBlock &BB : F)
-        if (!BB.isEHPad() && !BB.isLandingPad() && !containsSwiftError(&BB))
+        if (!BB.isEHPad() && !BB.isLandingPad() && !containsSwiftError(&BB) &&
+            !containsMustTailCall(&BB))
           basicBlocks.emplace_back(&BB);
 
       while (!basicBlocks.empty()) {
@@ -274,6 +275,14 @@ struct BogusControlFlow : public FunctionPass {
         basicBlocks.pop_front();
       } // end of while(!basicBlocks.empty())
     } while (--NumObfTimes > 0);
+  }
+
+  bool containsMustTailCall(BasicBlock *b) {
+    for (Instruction &I : *b)
+      if (CallInst *CI = dyn_cast<CallInst>(&I))
+        if (CI->isMustTailCall())
+          return true;
+    return false;
   }
 
   bool containsSwiftError(BasicBlock *b) {
