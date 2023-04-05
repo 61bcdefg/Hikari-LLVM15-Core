@@ -69,6 +69,14 @@ struct ConstantEncryption : public ModulePass {
     if (isa<IntrinsicInst>(I) || isa<GetElementPtrInst>(I) || isa<PHINode>(I) ||
         I->isAtomic())
       return false;
+    if (CallInst *CI = dyn_cast<CallInst>(I)) {
+      for (unsigned i = 0, e = CI->getNumOperandBundles(); i < e; ++i) {
+        OperandBundleUse BU = CI->getOperandBundleAt(i);
+        uint32_t Tag = BU.getTagID();
+        if (Tag == LLVMContext::OB_ptrauth)
+          return false;
+      }
+    }
     if (!(cryptoutils->get_range(100) <= ObfProbRateTemp))
       return false;
     return true;
