@@ -66,8 +66,8 @@ struct ConstantEncryption : public ModulePass {
   ConstantEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
   ConstantEncryption() : ModulePass(ID) { this->flag = true; }
   bool shouldEncryptConstant(Instruction *I) {
-    if (isa<IntrinsicInst>(I) || isa<GetElementPtrInst>(I) || isa<PHINode>(I) ||
-        I->isAtomic())
+    if (isa<SwitchInst>(I) || isa<IntrinsicInst>(I) ||
+        isa<GetElementPtrInst>(I) || isa<PHINode>(I) || I->isAtomic())
       return false;
     if (CallInst *CI = dyn_cast<CallInst>(I)) {
       for (unsigned i = 0, e = CI->getNumOperandBundles(); i < e; ++i) {
@@ -105,8 +105,6 @@ struct ConstantEncryption : public ModulePass {
             if (!shouldEncryptConstant(&I))
               continue;
             for (unsigned i = 0; i < I.getNumOperands(); i++) {
-              if (isa<SwitchInst>(&I) && i != 0)
-                break;
               Value *Op = I.getOperand(i);
               if (isa<ConstantInt>(Op))
                 HandleConstantIntOperand(&I, i);
@@ -125,8 +123,6 @@ struct ConstantEncryption : public ModulePass {
                 continue;
               for (unsigned int i = 0; i < I.getNumOperands(); i++)
                 if (ConstantInt *CI = dyn_cast<ConstantInt>(I.getOperand(i))) {
-                  if (isa<SwitchInst>(&I) && i != 0)
-                    break;
                   GlobalVariable *GV = new GlobalVariable(
                       M, CI->getType(), false,
                       GlobalValue::LinkageTypes::PrivateLinkage,
