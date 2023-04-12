@@ -215,7 +215,6 @@ void annotation2Metadata(Module &M) {
   auto *C = dyn_cast<ConstantArray>(Annotations->getInitializer());
   if (!C)
     return;
-  std::vector<ConstantStruct *> toDelete;
   for (unsigned int i = 0; i < C->getNumOperands(); i++)
     if (ConstantStruct *CS = dyn_cast<ConstantStruct>(C->getOperand(i))) {
       GlobalValue *StrC =
@@ -230,15 +229,12 @@ void annotation2Metadata(Module &M) {
       if (!Fn)
         continue;
 
-      toDelete.emplace_back(CS);
       // Add annotation to the function.
       std::vector<std::string> strs =
           splitString(StrData->getAsCString().str());
       for (std::string str : strs)
         writeAnnotationMetadata(Fn, str);
     }
-  for (ConstantStruct *CS : toDelete)
-    CS->dropAllReferences();
 }
 
 bool readAnnotationMetadata(Function *f, std::string annotation) {
