@@ -52,7 +52,7 @@ void fixStack(Function *f) {
           continue;
         }
         if (!(isa<AllocaInst>(&j) && j.getParent() == bbEntry) &&
-            valueEscapes(&j)) {
+            (valueEscapes(&j) || j.isUsedOutsideOfBlock(&i))) {
           tmpReg.emplace_back(&j);
           continue;
         }
