@@ -270,6 +270,30 @@ void writeAnnotationMetadata(Function *f, std::string annotation) {
   f->setMetadata(LLVMContext::MD_annotation, MD);
 }
 
+bool usersAllInOneFunction(GlobalVariable *GV) {
+  std::vector<Instruction *> instusers;
+  for (User *user : GV->users()) {
+    if (Instruction *Inst = dyn_cast<Instruction>(user))
+      instusers.emplace_back(Inst);
+    else if (ConstantExpr *CE = dyn_cast<ConstantExpr>(user)) {
+      for (User *user2 : CE->users()) {
+        if (Instruction *Inst = dyn_cast<Instruction>(user2))
+          instusers.emplace_back(Inst);
+        else
+          return GV->getNumUses() == 1;
+      }
+    } else
+      return GV->getNumUses() == 1;
+  }
+  Function *LastFuncOfInst = nullptr;
+  for (Instruction *I : instusers) {
+    if (LastFuncOfInst != nullptr && I->getFunction() != LastFuncOfInst)
+      return false;
+    LastFuncOfInst = I->getFunction();
+  }
+  return true;
+}
+
 #if 0
 std::map<GlobalValue *, StringRef> BuildAnnotateMap(Module &M) {
   std::map<GlobalValue *, StringRef> VAMap;
