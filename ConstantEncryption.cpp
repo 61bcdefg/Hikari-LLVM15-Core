@@ -63,6 +63,7 @@ struct ConstantEncryption : public ModulePass {
   static char ID;
   bool flag;
   std::vector<BinaryOperator *> obfedbos;
+  std::map<GlobalVariable *, std::pair<ConstantInt *, ConstantInt *>> gv2pair;
   ConstantEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
   ConstantEncryption() : ModulePass(ID) { this->flag = true; }
   bool shouldEncryptConstant(Instruction *I) {
@@ -86,6 +87,7 @@ struct ConstantEncryption : public ModulePass {
     for (Function &F : M)
       if (toObfuscate(flag, &F, "constenc") && !F.isPresplitCoroutine()) {
         errs() << "Running ConstantEncryption On " << F.getName() << "\n";
+        FixFunctionConstantExpr(&F);
         if (!toObfuscateUint32Option(&F, "constenc_prob", &ObfProbRateTemp))
           ObfProbRateTemp = ObfProbRate;
         if (ObfProbRateTemp > 100) {
@@ -108,8 +110,7 @@ struct ConstantEncryption : public ModulePass {
               Value *Op = I.getOperand(i);
               if (isa<ConstantInt>(Op))
                 HandleConstantIntOperand(&I, i);
-              if (GlobalVariable *G =
-                      dyn_cast<GlobalVariable>(Op->stripPointerCasts()))
+              if (GlobalVariable *G = dyn_cast<GlobalVariable>(Op))
                 if (G->hasInitializer() &&
                     (G->hasPrivateLinkage() || G->hasInternalLinkage()) &&
                     isa<ConstantInt>(G->getInitializer()))
@@ -176,13 +177,20 @@ struct ConstantEncryption : public ModulePass {
   }
 
   void HandleConstantIntInitializerGV(GlobalVariable *GVPtr) {
+    if (!(flag || usersAllInOneFunction(GVPtr)))
+      return;
     // Prepare Types and Keys
-    ConstantInt *CI = dyn_cast<ConstantInt>(GVPtr->getInitializer());
-    std::pair<ConstantInt * /*key*/, ConstantInt * /*new*/> keyandnew =
-        PairConstantInt(CI);
+    bool hasHandled = true;
+    std::pair<ConstantInt *, ConstantInt *> keyandnew = gv2pair[GVPtr];
+    if (!keyandnew.first || !keyandnew.second) {
+      ConstantInt *CI = dyn_cast<ConstantInt>(GVPtr->getInitializer());
+      keyandnew = PairConstantInt(CI);
+      gv2pair[GVPtr] = keyandnew;
+      hasHandled = false;
+    }
     ConstantInt *XORKey = keyandnew.first;
     ConstantInt *newGVInit = keyandnew.second;
-    if (!XORKey || !newGVInit)
+    if (!XORKey || !newGVInit || hasHandled)
       return;
     GVPtr->setInitializer(newGVInit);
     for (User *U : GVPtr->users()) {
@@ -195,8 +203,7 @@ struct ConstantEncryption : public ModulePass {
       } else if (StoreInst *SI = dyn_cast<StoreInst>(U)) {
         XORInst = BinaryOperator::Create(Instruction::Xor, SI->getOperand(0),
                                          XORKey, "", SI);
-        SI->getOperand(0)->replaceUsesWithIf(
-            XORInst, [XORInst](Use &U) { return U.getUser() != XORInst; });
+        SI->replaceUsesOfWith(SI->getValueOperand(), XORInst);
       }
       if (XORInst && SubstituteXorTemp)
         SubstituteImpl::substituteXor(XORInst);
@@ -219,6 +226,8 @@ struct ConstantEncryption : public ModulePass {
 
   std::pair<ConstantInt * /*key*/, ConstantInt * /*new*/>
   PairConstantInt(ConstantInt *C) {
+    if (!C)
+      return std::make_pair(nullptr, nullptr);
     IntegerType *IT = cast<IntegerType>(C->getType());
     uint64_t K;
     if (IT->getBitWidth() == 1 || IT->getBitWidth() == 8)
