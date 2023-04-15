@@ -17,7 +17,7 @@ using namespace llvm;
 namespace llvm {
 
 // Shamefully borrowed from ../Scalar/RegToMem.cpp :(
-static bool valueEscapes(Instruction *Inst) {
+bool valueEscapes(Instruction *Inst) {
   BasicBlock *BB = Inst->getParent();
   for (Value::use_iterator UI = Inst->use_begin(), E = Inst->use_end(); UI != E;
        ++UI) {
@@ -68,7 +68,7 @@ void fixStack(Function *f) {
 // Unlike O-LLVM which uses __attribute__ that is not supported by the ObjC
 // CFE. We use a dummy call here and remove the call later Very dumb and
 // definitely slower than the function attribute method Merely a hack
-static bool readFlag(Function *f, std::string attribute) {
+bool readFlag(Function *f, std::string attribute) {
   for (Instruction &I : instructions(f)) {
     Instruction *Inst = &I;
     if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
@@ -112,9 +112,11 @@ bool toObfuscateBoolOption(Function *f, std::string option, bool *val) {
   return false;
 }
 
-static bool readAnnotationMetadataUint32OptVal(Function *f, std::string opt,
-                                               uint32_t *val) {
-  MDNode *Existing = f->getMetadata(LLVMContext::MD_annotation);
+static const char obfkindid[] = "MD_obf";
+
+bool readAnnotationMetadataUint32OptVal(Function *f, std::string opt,
+                                        uint32_t *val) {
+  MDNode *Existing = f->getMetadata(obfkindid);
   if (Existing) {
     MDTuple *Tuple = cast<MDTuple>(Existing);
     for (auto &N : Tuple->operands()) {
@@ -129,7 +131,7 @@ static bool readAnnotationMetadataUint32OptVal(Function *f, std::string opt,
   return false;
 }
 
-static bool readFlagUint32OptVal(Function *f, std::string opt, uint32_t *val) {
+bool readFlagUint32OptVal(Function *f, std::string opt, uint32_t *val) {
   for (Instruction &I : instructions(f)) {
     Instruction *Inst = &I;
     if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
@@ -160,7 +162,7 @@ bool hasApplePtrauth(Module *M) {
   return false;
 }
 
-static void FixBasicBlockConstantExpr(BasicBlock *BB) {
+void FixBasicBlockConstantExpr(BasicBlock *BB) {
   // Replace ConstantExpr with equal instructions
   // Otherwise replacing on Constant will crash the compiler
   // Things to note:
@@ -199,7 +201,7 @@ void turnOffOptimization(Function *f) {
     f->addFnAttr(Attribute::AttrKind::OptimizeNone);
 }
 
-static inline std::vector<std::string> splitString(std::string str) {
+inline std::vector<std::string> splitString(std::string str) {
   std::stringstream ss(str);
   std::string word;
   std::vector<std::string> words;
@@ -238,7 +240,7 @@ void annotation2Metadata(Module &M) {
 }
 
 bool readAnnotationMetadata(Function *f, std::string annotation) {
-  MDNode *Existing = f->getMetadata(LLVMContext::MD_annotation);
+  MDNode *Existing = f->getMetadata(obfkindid);
   if (Existing) {
     MDTuple *Tuple = cast<MDTuple>(Existing);
     for (auto &N : Tuple->operands())
@@ -252,7 +254,7 @@ void writeAnnotationMetadata(Function *f, std::string annotation) {
   LLVMContext &Context = f->getContext();
   MDBuilder MDB(Context);
 
-  MDNode *Existing = f->getMetadata(LLVMContext::MD_annotation);
+  MDNode *Existing = f->getMetadata(obfkindid);
   SmallVector<Metadata *, 4> Names;
   bool AppendName = true;
   if (Existing) {
@@ -260,14 +262,14 @@ void writeAnnotationMetadata(Function *f, std::string annotation) {
     for (auto &N : Tuple->operands()) {
       if (cast<MDString>(N.get())->getString() == annotation)
         AppendName = false;
-      Names.push_back(N.get());
+      Names.emplace_back(N.get());
     }
   }
   if (AppendName)
     Names.emplace_back(MDB.createString(annotation));
 
   MDNode *MD = MDTuple::get(Context, Names);
-  f->setMetadata(LLVMContext::MD_annotation, MD);
+  f->setMetadata(obfkindid, MD);
 }
 
 bool usersAllInOneFunction(GlobalVariable *GV) {
