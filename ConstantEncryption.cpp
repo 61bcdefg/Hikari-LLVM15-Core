@@ -26,6 +26,7 @@
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/SubstituteImpl.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
+#include "llvm/Transforms/Obfuscation/compat/CallSite.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 using namespace llvm;
@@ -62,7 +63,7 @@ namespace llvm {
 struct ConstantEncryption : public ModulePass {
   static char ID;
   bool flag;
-  std::vector<BinaryOperator *> obfedbos;
+  bool dispatchonce;
   std::map<GlobalVariable *, std::pair<ConstantInt *, ConstantInt *>> gv2pair;
   ConstantEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
   ConstantEncryption() : ModulePass(ID) { this->flag = true; }
@@ -70,6 +71,27 @@ struct ConstantEncryption : public ModulePass {
     if (isa<SwitchInst>(I) || isa<IntrinsicInst>(I) ||
         isa<GetElementPtrInst>(I) || isa<PHINode>(I) || I->isAtomic())
       return false;
+    if (dispatchonce)
+      if (AllocaInst *AI = dyn_cast<AllocaInst>(I)) {
+        if (AI->getAllocatedType()->isIntegerTy())
+          for (User *U : AI->users())
+            if (LoadInst *LI = dyn_cast<LoadInst>(U))
+              for (User *LU : LI->users())
+                if (CallInst *CI = dyn_cast<CallInst>(LU)) {
+                  CallSite CS(CI);
+                  Value *calledFunction = CS.getCalledFunction();
+                  if (!calledFunction)
+                    calledFunction = CS.getCalledValue()->stripPointerCasts();
+                  if (!calledFunction ||
+                      (!isa<ConstantExpr>(calledFunction) &&
+                       !isa<Function>(calledFunction)) ||
+                      CS.getIntrinsicID() != Intrinsic::not_intrinsic)
+                    continue;
+                  if (calledFunction->getName() == "_dispatch_once" ||
+                      calledFunction->getName() == "dispatch_once")
+                    return false;
+                }
+      }
     if (CallInst *CI = dyn_cast<CallInst>(I)) {
       for (unsigned i = 0, e = CI->getNumOperandBundles(); i < e; ++i) {
         OperandBundleUse BU = CI->getOperandBundleAt(i);
@@ -83,6 +105,7 @@ struct ConstantEncryption : public ModulePass {
     return true;
   }
   bool runOnModule(Module &M) override {
+    dispatchonce = M.getFunction("dispatch_once");
     const DataLayout &DL = M.getDataLayout();
     for (Function &F : M)
       if (toObfuscate(flag, &F, "constenc") && !F.isPresplitCoroutine()) {
@@ -138,9 +161,6 @@ struct ConstantEncryption : public ModulePass {
               if (BinaryOperator *BO = dyn_cast<BinaryOperator>(I)) {
                 if (!BO->getType()->isIntegerTy())
                   continue;
-                if (std::find(obfedbos.begin(), obfedbos.end(), BO) !=
-                    obfedbos.end())
-                  continue;
                 IntegerType *IT = cast<IntegerType>(BO->getType());
                 uint64_t dummy = 0;
                 if (IT->getBitWidth() == 8)
@@ -166,7 +186,6 @@ struct ConstantEncryption : public ModulePass {
                 LI->insertAfter(SI);
                 BO->replaceUsesWithIf(
                     LI, [SI](Use &U) { return U.getUser() != SI; });
-                obfedbos.emplace_back(BO);
               }
             }
           }
@@ -176,8 +195,52 @@ struct ConstantEncryption : public ModulePass {
     return true;
   }
 
+  bool isDispatchOnceToken(GlobalVariable *GV) {
+    if (!dispatchonce)
+      return false;
+    for (User *U : GV->users()) {
+      if (CallInst *CI = dyn_cast<CallInst>(U)) {
+        CallSite CS(CI);
+        Value *calledFunction = CS.getCalledFunction();
+        if (!calledFunction)
+          calledFunction = CS.getCalledValue()->stripPointerCasts();
+        if (!calledFunction ||
+            (!isa<ConstantExpr>(calledFunction) &&
+             !isa<Function>(calledFunction)) ||
+            CS.getIntrinsicID() != Intrinsic::not_intrinsic)
+          continue;
+        if (calledFunction->getName() == "_dispatch_once" ||
+            calledFunction->getName() == "dispatch_once") {
+          Value *onceToken = CI->getArgOperand(0);
+          if (dyn_cast_or_null<GlobalVariable>(
+                  onceToken->stripPointerCasts()) == GV)
+            return true;
+        }
+      }
+      if (StoreInst *SI = dyn_cast<StoreInst>(U))
+        for (User *SU : SI->getPointerOperand()->users())
+          if (LoadInst *LI = dyn_cast<LoadInst>(SU))
+            for (User *LU : LI->users())
+              if (CallInst *CI = dyn_cast<CallInst>(LU)) {
+                CallSite CS(CI);
+                Value *calledFunction = CS.getCalledFunction();
+                if (!calledFunction)
+                  calledFunction = CS.getCalledValue()->stripPointerCasts();
+                if (!calledFunction ||
+                    (!isa<ConstantExpr>(calledFunction) &&
+                     !isa<Function>(calledFunction)) ||
+                    CS.getIntrinsicID() != Intrinsic::not_intrinsic)
+                  continue;
+                if (calledFunction->getName() == "_dispatch_once" ||
+                    calledFunction->getName() == "dispatch_once")
+                  return true;
+              }
+    }
+    return false;
+  }
+
   void HandleConstantIntInitializerGV(GlobalVariable *GVPtr) {
-    if (!(flag || usersAllInOneFunction(GVPtr)))
+    if (!(flag || usersAllInOneFunction(GVPtr)) || isDispatchOnceToken(GVPtr))
       return;
     // Prepare Types and Keys
     bool hasHandled = true;
