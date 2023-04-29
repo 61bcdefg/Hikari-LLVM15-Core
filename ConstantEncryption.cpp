@@ -92,14 +92,6 @@ struct ConstantEncryption : public ModulePass {
                     return false;
                 }
       }
-    if (CallInst *CI = dyn_cast<CallInst>(I)) {
-      for (unsigned i = 0, e = CI->getNumOperandBundles(); i < e; ++i) {
-        OperandBundleUse BU = CI->getOperandBundleAt(i);
-        uint32_t Tag = BU.getTagID();
-        if (Tag == LLVMContext::OB_ptrauth)
-          return false;
-      }
-    }
     if (!(cryptoutils->get_range(100) <= ObfProbRateTemp))
       return false;
     return true;
@@ -129,7 +121,10 @@ struct ConstantEncryption : public ModulePass {
           for (Instruction &I : instructions(F)) {
             if (!shouldEncryptConstant(&I))
               continue;
+            CallInst *CI = dyn_cast<CallInst>(&I);
             for (unsigned i = 0; i < I.getNumOperands(); i++) {
+              if (CI && CI->isBundleOperand(i))
+                continue;
               Value *Op = I.getOperand(i);
               if (isa<ConstantInt>(Op))
                 HandleConstantIntOperand(&I, i);
@@ -145,7 +140,10 @@ struct ConstantEncryption : public ModulePass {
             for (Instruction &I : instructions(F)) {
               if (!shouldEncryptConstant(&I))
                 continue;
-              for (unsigned int i = 0; i < I.getNumOperands(); i++)
+              CallInst *CI = dyn_cast<CallInst>(&I);
+              for (unsigned int i = 0; i < I.getNumOperands(); i++) {
+                if (CI && CI->isBundleOperand(i))
+                  continue;
                 if (ConstantInt *CI = dyn_cast<ConstantInt>(I.getOperand(i))) {
                   GlobalVariable *GV = new GlobalVariable(
                       M, CI->getType(), false,
@@ -155,6 +153,7 @@ struct ConstantEncryption : public ModulePass {
                   appendToCompilerUsed(M, GV);
                   I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
                 }
+              }
               ins.emplace_back(&I);
             }
             for (Instruction *I : ins) {
