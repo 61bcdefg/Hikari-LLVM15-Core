@@ -54,8 +54,6 @@ struct IndirectBranch : public FunctionPass {
         continue;
       if (!toObfuscateBoolOption(&F, "indibran_use_stack", &UseStackTemp))
         UseStackTemp = UseStack;
-      if (UseStackTemp)
-        turnOffOptimization(&F);
 
       // See https://github.com/61bcdefg/Hikari-LLVM15/issues/32
       createLegacyLowerSwitchPass()->runOnFunction(F);
@@ -137,11 +135,11 @@ struct IndirectBranch : public FunctionPass {
     Value *zero = ConstantInt::get(Int32Ty, 0);
 
     IRBuilder<NoFolder> *IRBEntry =
-        new IRBuilder<NoFolder>(Func.getEntryBlock().getTerminator());
+        new IRBuilder<NoFolder>(&Func.getEntryBlock().front());
     for (BranchInst *BI : BIs) {
       if (UseStackTemp &&
           IRBEntry->GetInsertPoint() !=
-              (BasicBlock::iterator)Func.getEntryBlock().getTerminator())
+              (BasicBlock::iterator)Func.getEntryBlock().front())
         IRBEntry->SetInsertPoint(Func.getEntryBlock().getTerminator());
       IRBuilder<NoFolder> *IRBBI = new IRBuilder<NoFolder>(BI);
       std::vector<BasicBlock *> BBs;
@@ -176,6 +174,8 @@ struct IndirectBranch : public FunctionPass {
       } else {
         LoadFrom = M->getGlobalVariable("IndirectBranchingGlobalTable", true);
       }
+      AllocaInst *LoadFromAI = IRBEntry->CreateAlloca(LoadFrom->getType());
+      IRBEntry->CreateStore(LoadFrom, LoadFromAI);
       Value *index, *RealIndex = nullptr;
       if (BI->isConditional()) {
         Value *condition = BI->getCondition();
@@ -207,33 +207,23 @@ struct IndirectBranch : public FunctionPass {
         } else {
           indexval = ConstantInt::get(Int32Ty, indexmap[BI->getSuccessor(0)]);
         }
-        if (UseStackTemp) {
-          AllocaInst *AI = IRBEntry->CreateAlloca(indexval->getType());
-          IRBEntry->CreateStore(indexval, AI);
-          index = IRBEntry->CreateLoad(AI->getAllocatedType(), AI);
-        } else {
-          index = indexval;
-        }
-        RealIndex = EncryptJumpTargetTemp ? (UseStackTemp ? IRBEntry : IRBBI)
-                                                ->CreateXor(index, IndexEncKey)
+        index = indexval;
+        RealIndex = EncryptJumpTargetTemp ? IRBBI->CreateXor(index, IndexEncKey)
                                           : index;
       }
       Value *LI, *enckeyLoad, *gepptr = nullptr;
       if (UseStackTemp) {
-        Value *GEP = IRBEntry->CreateGEP(
-            LoadFrom->getValueType(), LoadFrom,
-            {zero, BI->isConditional()
-                       ? IRBEntry->CreateLoad(Int32Ty, RealIndex)
-                       : RealIndex});
-        AllocaInst *AI = IRBEntry->CreateAlloca(GEP->getType());
-        IRBEntry->CreateStore(GEP, AI);
+        LoadInst *LILoadFrom =
+            IRBBI->CreateLoad(LoadFrom->getType(), LoadFromAI);
+        Value *GEP = IRBBI->CreateGEP(
+            LoadFrom->getValueType(), LILoadFrom,
+            {zero, BI->isConditional() ? IRBBI->CreateLoad(Int32Ty, RealIndex)
+                                       : RealIndex});
         if (!EncryptJumpTargetTemp)
-          LI = IRBBI->CreateLoad(
-              Int8PtrTy, IRBEntry->CreateLoad(AI->getAllocatedType(), AI),
-              "IndirectBranchingTargetAddress");
+          LI = IRBBI->CreateLoad(Int8PtrTy, GEP,
+                                 "IndirectBranchingTargetAddress");
         else
-          gepptr = IRBBI->CreateLoad(
-              Int8PtrTy, IRBBI->CreateLoad(AI->getAllocatedType(), AI));
+          gepptr = IRBBI->CreateLoad(Int8PtrTy, GEP);
       } else {
         Value *GEP = IRBBI->CreateGEP(LoadFrom->getValueType(), LoadFrom,
                                       {zero, RealIndex});
