@@ -239,7 +239,7 @@ struct ConstantEncryption : public ModulePass {
   }
 
   void HandleConstantIntInitializerGV(GlobalVariable *GVPtr) {
-    if (!(flag || usersAllInOneFunction(GVPtr)) || isDispatchOnceToken(GVPtr))
+    if (!(flag || AreUsersInOneFunction(GVPtr)) || isDispatchOnceToken(GVPtr))
       return;
     // Prepare Types and Keys
     bool hasHandled = true;
