@@ -272,28 +272,22 @@ void writeAnnotationMetadata(Function *f, std::string annotation) {
   f->setMetadata(obfkindid, MD);
 }
 
-bool usersAllInOneFunction(GlobalVariable *GV) {
-  std::vector<Instruction *> instusers;
-  for (User *user : GV->users()) {
-    if (Instruction *Inst = dyn_cast<Instruction>(user))
-      instusers.emplace_back(Inst);
-    else if (ConstantExpr *CE = dyn_cast<ConstantExpr>(user)) {
-      for (User *user2 : CE->users()) {
-        if (Instruction *Inst = dyn_cast<Instruction>(user2))
-          instusers.emplace_back(Inst);
-        else
-          return GV->getNumUses() == 1;
+bool AreUsersInOneFunction(GlobalVariable *GV) {
+  std::set<Function *> userFunctions;
+  for (User *U : GV->users()) {
+    if (Instruction *I = dyn_cast<Instruction>(U)) {
+      userFunctions.insert(I->getFunction());
+    } else if (ConstantExpr *CE = dyn_cast<ConstantExpr>(U)) {
+      for (User *U2 : CE->users()) {
+        if (Instruction *I = dyn_cast<Instruction>(U2)) {
+          userFunctions.insert(I->getFunction());
+        }
       }
-    } else
-      return GV->getNumUses() == 1;
-  }
-  Function *LastFuncOfInst = nullptr;
-  for (Instruction *I : instusers) {
-    if (LastFuncOfInst != nullptr && I->getFunction() != LastFuncOfInst)
+    } else {
       return false;
-    LastFuncOfInst = I->getFunction();
+    }
   }
-  return true;
+  return userFunctions.size() <= 1;
 }
 
 #if 0

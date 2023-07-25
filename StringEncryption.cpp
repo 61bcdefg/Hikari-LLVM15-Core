@@ -46,7 +46,7 @@ struct StringEncryption : public ModulePass {
         std::find(genedgv.begin(), genedgv.end(), GV) == genedgv.end() &&
         ((GV->getLinkage() == GlobalValue::LinkageTypes::PrivateLinkage ||
           GV->getLinkage() == GlobalValue::LinkageTypes::InternalLinkage) &&
-         (flag || usersAllInOneFunction(GV))))
+         (flag || AreUsersInOneFunction(GV))))
       return true;
     return false;
   }
