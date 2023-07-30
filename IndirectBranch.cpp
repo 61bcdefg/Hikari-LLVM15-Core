@@ -12,7 +12,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
-#include "llvm/Transforms/Obfuscation/SubstituteImpl.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/LowerSwitch.h"
@@ -255,7 +254,6 @@ struct IndirectBranch : public FunctionPass {
         LI =
             IRBBI->CreateGEP(Int8Ty, gepptr, IRBBI->CreateSub(zero, enckeyLoad),
                              "IndirectBranchingTargetAddress");
-        SubstituteImpl::substituteXor(dyn_cast<BinaryOperator>(enckeyLoad));
       }
       IndirectBrInst *indirBr = IndirectBrInst::Create(
           CallInst::Create(valwrapfunc, {LI}, "", BI), BBs.size());
