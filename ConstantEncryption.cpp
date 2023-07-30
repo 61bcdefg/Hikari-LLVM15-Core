@@ -71,6 +71,9 @@ struct ConstantEncryption : public ModulePass {
     if (isa<SwitchInst>(I) || isa<IntrinsicInst>(I) ||
         isa<GetElementPtrInst>(I) || isa<PHINode>(I) || I->isAtomic())
       return false;
+    if (AllocaInst *AI = dyn_cast<AllocaInst>(I))
+      if (AI->isSwiftError())
+        return false;
     if (dispatchonce)
       if (AllocaInst *AI = dyn_cast<AllocaInst>(I)) {
         if (AI->getAllocatedType()->isIntegerTy())
