@@ -651,12 +651,11 @@ struct BogusControlFlow : public FunctionPass {
       InlineAsm *IA = InlineAsm::get(
           FunctionType::get(Type::getVoidTy(alteredBB->getContext()), false),
           junk, "", true, false);
-#if LLVM_VERSION_MAJOR >= 16
-      CallInst::Create(IA, std::nullopt, "",
-                       &*alteredBB->getFirstInsertionPt());
-#else
-      CallInst::Create(IA, None, "", &*alteredBB->getFirstInsertionPt());
-#endif
+      if (OnlyJunkAssemblyTemp)
+        CallInst::Create(IA, {}, "", alteredBB);
+      else
+        CallInst::Create(IA, {}, "",
+                         alteredBB->getFirstNonPHIOrDbgOrLifetime());
       turnOffOptimization(basicBlock->getParent());
     }
     return alteredBB;
