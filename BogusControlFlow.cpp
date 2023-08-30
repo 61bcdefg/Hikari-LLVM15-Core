@@ -94,6 +94,7 @@
 #include "llvm/Transforms/Obfuscation/BogusControlFlow.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
@@ -261,7 +262,7 @@ struct BogusControlFlow : public FunctionPass {
       std::list<BasicBlock *> basicBlocks;
       for (BasicBlock &BB : F)
         if (!BB.isEHPad() && !BB.isLandingPad() && !containsSwiftError(&BB) &&
-            !containsMustTailCall(&BB))
+            !containsMustTailCall(&BB) && !containsCoroBeginInst(&BB))
           basicBlocks.emplace_back(&BB);
 
       while (!basicBlocks.empty()) {
@@ -275,6 +276,14 @@ struct BogusControlFlow : public FunctionPass {
         basicBlocks.pop_front();
       } // end of while(!basicBlocks.empty())
     } while (--NumObfTimes > 0);
+  }
+
+  bool containsCoroBeginInst(BasicBlock *b) {
+    for (Instruction &I : *b)
+      if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(&I))
+        if (II->getIntrinsicID() == Intrinsic::coro_begin)
+          return true;
+    return false;
   }
 
   bool containsMustTailCall(BasicBlock *b) {
