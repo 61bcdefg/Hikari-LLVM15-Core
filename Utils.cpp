@@ -197,8 +197,11 @@ void FixFunctionConstantExpr(Function *Func) {
 void turnOffOptimization(Function *f) {
   f->removeFnAttr(Attribute::AttrKind::MinSize);
   f->removeFnAttr(Attribute::AttrKind::OptimizeForSize);
-  if (!f->hasFnAttribute(Attribute::AttrKind::OptimizeNone))
+  if (!f->hasFnAttribute(Attribute::AttrKind::OptimizeNone) &&
+      !f->hasFnAttribute(Attribute::AttrKind::AlwaysInline)) {
     f->addFnAttr(Attribute::AttrKind::OptimizeNone);
+    f->addFnAttr(Attribute::AttrKind::NoInline);
+  }
 }
 
 inline std::vector<std::string> splitString(std::string str) {
