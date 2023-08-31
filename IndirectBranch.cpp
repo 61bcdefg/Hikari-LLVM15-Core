@@ -20,9 +20,9 @@
 using namespace llvm;
 
 static cl::opt<bool>
-    UseStack("indibran-use-stack", cl::init(false), cl::NotHidden,
+    UseStack("indibran-use-stack", cl::init(true), cl::NotHidden,
              cl::desc("[IndirectBranch]Stack-based indirect jumps"));
-static bool UseStackTemp = false;
+static bool UseStackTemp = true;
 
 static cl::opt<bool>
     EncryptJumpTarget("indibran-enc-jump-target", cl::init(false),
@@ -35,7 +35,6 @@ struct IndirectBranch : public FunctionPass {
   static char ID;
   bool flag;
   bool initialized;
-  Function *valwrapfunc;
   std::map<BasicBlock *, unsigned long long> indexmap;
   std::map<Function *, ConstantInt *> encmap;
   IndirectBranch() : FunctionPass(ID) {
@@ -94,32 +93,6 @@ struct IndirectBranch : public FunctionPass {
         M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
         BlockAddressArray, "IndirectBranchingGlobalTable");
     appendToCompilerUsed(M, {Table});
-    // valwrap - make what IDA Pro displays in the pseudocode window even
-    // weirder.
-    // In IDA Pro 7.7.220118
-    // Original
-    /* void __cdecl -[ViewController viewDidLoad](ViewController *self, SEL a2)
-     * {
-     * return off_10000D0D0();
-     * }
-     */
-    // New
-    /* void __cdecl -[ViewController viewDidLoad](ViewController *self, SEL a2)
-     * {
-     * __int64 v2; // kr00_8
-     * v2 = nullsub_1(off_10000D0D0);
-     * __asm { BR              X0 }
-     * }
-     */
-    Function *valwrap = Function::Create(
-        FunctionType::get(Type::getInt8PtrTy(M.getContext()),
-                          {Type::getInt8PtrTy(M.getContext())}, false),
-        GlobalValue::LinkageTypes::PrivateLinkage,
-        "HikariIndirectBranchTargetWrapper", M);
-    BasicBlock *BB = BasicBlock::Create(valwrap->getContext(), "", valwrap);
-    ReturnInst::Create(valwrap->getContext(), valwrap->getArg(0), BB);
-    appendToCompilerUsed(M, {valwrap});
-    this->valwrapfunc = valwrap;
     this->initialized = true;
     return true;
   }
@@ -213,6 +186,11 @@ struct IndirectBranch : public FunctionPass {
                          ->CreateLoad(indexgv->getValueType(), indexgv);
         } else {
           indexval = ConstantInt::get(Int32Ty, indexmap[BI->getSuccessor(0)]);
+          if (UseStackTemp) {
+            AllocaInst *indexAI = IRBEntry->CreateAlloca(Int32Ty);
+            IRBEntry->CreateStore(indexval, indexAI);
+            indexval = IRBBI->CreateLoad(indexAI->getAllocatedType(), indexAI);
+          }
         }
         index = indexval;
         RealIndex = EncryptJumpTargetTemp ? IRBBI->CreateXor(index, IndexEncKey)
@@ -255,8 +233,7 @@ struct IndirectBranch : public FunctionPass {
             IRBBI->CreateGEP(Int8Ty, gepptr, IRBBI->CreateSub(zero, enckeyLoad),
                              "IndirectBranchingTargetAddress");
       }
-      IndirectBrInst *indirBr = IndirectBrInst::Create(
-          CallInst::Create(valwrapfunc, {LI}, "", BI), BBs.size());
+      IndirectBrInst *indirBr = IndirectBrInst::Create(LI, BBs.size());
       for (BasicBlock *BB : BBs)
         indirBr->addDestination(BB);
       ReplaceInstWithInst(BI, indirBr);
