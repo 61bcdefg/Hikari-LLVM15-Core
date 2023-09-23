@@ -83,6 +83,60 @@ struct StringEncryption : public ModulePass {
     return true;
   }
 
+  void processStructMembers(ConstantStruct *CS,
+                            std::vector<GlobalVariable *> *unhandleablegvs,
+                            std::vector<GlobalVariable *> *Globals,
+                            std::set<User *> *Users, bool *breakFor) {
+    for (unsigned i = 0; i < CS->getNumOperands(); i++) {
+      Constant *Op = CS->getOperand(i);
+      if (GlobalVariable *GV =
+              dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
+        if (!handleableGV(GV)) {
+          unhandleablegvs->emplace_back(GV);
+          continue;
+        }
+        Users->insert(opaquepointers ? CS : Op);
+        if (std::find(Globals->begin(), Globals->end(), GV) == Globals->end()) {
+          Globals->emplace_back(GV);
+          *breakFor = true;
+        }
+      } else if (ConstantStruct *NestedCS = dyn_cast<ConstantStruct>(Op)) {
+        processStructMembers(NestedCS, unhandleablegvs, Globals, Users,
+                             breakFor);
+      } else if (ConstantArray *NestedCA = dyn_cast<ConstantArray>(Op)) {
+        processArrayMembers(NestedCA, unhandleablegvs, Globals, Users,
+                            breakFor);
+      }
+    }
+  }
+
+  void processArrayMembers(ConstantArray *CA,
+                           std::vector<GlobalVariable *> *unhandleablegvs,
+                           std::vector<GlobalVariable *> *Globals,
+                           std::set<User *> *Users, bool *breakFor) {
+    for (unsigned i = 0; i < CA->getNumOperands(); i++) {
+      Constant *Op = CA->getOperand(i);
+      if (GlobalVariable *GV =
+              dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
+        if (!handleableGV(GV)) {
+          unhandleablegvs->emplace_back(GV);
+          continue;
+        }
+        Users->insert(opaquepointers ? CA : Op);
+        if (std::find(Globals->begin(), Globals->end(), GV) == Globals->end()) {
+          Globals->emplace_back(GV);
+          *breakFor = true;
+        }
+      } else if (ConstantStruct *NestedCS = dyn_cast<ConstantStruct>(Op)) {
+        processStructMembers(NestedCS, unhandleablegvs, Globals, Users,
+                             breakFor);
+      } else if (ConstantArray *NestedCA = dyn_cast<ConstantArray>(Op)) {
+        processArrayMembers(NestedCA, unhandleablegvs, Globals, Users,
+                            breakFor);
+      }
+    }
+  }
+
   void HandleFunction(Function *Func) {
     FixFunctionConstantExpr(Func);
     std::vector<GlobalVariable *> Globals;
@@ -142,40 +196,12 @@ struct StringEncryption : public ModulePass {
               rawStrings.insert(GV);
             } else if (ConstantStruct *CS =
                            dyn_cast<ConstantStruct>(GV->getInitializer())) {
-              for (unsigned i = 0; i < CS->getNumOperands(); i++) {
-                Constant *Op = CS->getOperand(i);
-                if (GlobalVariable *OpGV =
-                        dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
-                  if (!handleableGV(OpGV)) {
-                    unhandleablegvs.emplace_back(OpGV);
-                    continue;
-                  }
-                  Users.insert(opaquepointers ? CS : Op);
-                  if (std::find(Globals.begin(), Globals.end(), OpGV) ==
-                      Globals.end()) {
-                    Globals.emplace_back(OpGV);
-                    breakThisFor = true;
-                  }
-                }
-              }
+              processStructMembers(CS, &unhandleablegvs, &Globals, &Users,
+                                   &breakThisFor);
             } else if (ConstantArray *CA =
                            dyn_cast<ConstantArray>(GV->getInitializer())) {
-              for (unsigned j = 0; j < CA->getNumOperands(); j++) {
-                Constant *Op = CA->getOperand(j);
-                if (GlobalVariable *OpGV =
-                        dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
-                  if (!handleableGV(OpGV)) {
-                    unhandleablegvs.emplace_back(OpGV);
-                    continue;
-                  }
-                  Users.insert(opaquepointers ? CA : Op);
-                  if (std::find(Globals.begin(), Globals.end(), OpGV) ==
-                      Globals.end()) {
-                    Globals.emplace_back(OpGV);
-                    breakThisFor = true;
-                  }
-                }
-              }
+              processArrayMembers(CA, &unhandleablegvs, &Globals, &Users,
+                                  &breakThisFor);
             }
           } else {
             unhandleablegvs.emplace_back(GV);
@@ -211,8 +237,16 @@ struct StringEncryption : public ModulePass {
       ConstantDataSequential *CDS =
           cast<ConstantDataSequential>(GV->getInitializer());
       Type *ElementTy = CDS->getElementType();
-      if (!ElementTy->isIntegerTy())
-        continue;
+      if (!ElementTy->isIntegerTy()) {
+        if (ElementTy->getTypeID() ==
+            14) { // IntegerTyID is always 14 on AppleClang15, wtf
+          StringRef Str = CDS->getAsString();
+          if (Str.back() != 0) {
+            continue;
+          }
+        } else
+          continue;
+      }
       IntegerType *intType = cast<IntegerType>(ElementTy);
       Constant *KeyConst, *EncryptedConst, *DummyConst = nullptr;
       unencryptedindex[GV] = {};
