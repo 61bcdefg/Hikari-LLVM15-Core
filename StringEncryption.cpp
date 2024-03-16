@@ -238,6 +238,7 @@ struct StringEncryption : public ModulePass {
           cast<ConstantDataSequential>(GV->getInitializer());
       Type *ElementTy = CDS->getElementType();
       if (!ElementTy->isIntegerTy()) {
+#if LLVM_VERSION_MAJOR >= 16
         if (ElementTy->getTypeID() ==
             14) { // IntegerTyID is always 14 on AppleClang15, wtf
           StringRef Str = CDS->getAsString();
@@ -245,6 +246,7 @@ struct StringEncryption : public ModulePass {
             continue;
           }
         } else
+#endif
           continue;
       }
       IntegerType *intType = cast<IntegerType>(ElementTy);
