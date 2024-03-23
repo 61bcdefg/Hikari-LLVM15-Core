@@ -16,7 +16,12 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "llvm/Transforms/Obfuscation/AntiDebugging.h"
+#if LLVM_VERSION_MAJOR >= 17
+#include "llvm/ADT/SmallString.h"
+#include "llvm/TargetParser/Triple.h"
+#else
 #include "llvm/ADT/Triple.h"
+#endif
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"

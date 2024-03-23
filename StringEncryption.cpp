@@ -11,6 +11,7 @@
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Obfuscation.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
+#include <set>
 
 using namespace llvm;
 
@@ -55,7 +56,11 @@ struct StringEncryption : public ModulePass {
     // in runOnModule. We simple iterate function list and dispatch functions
     // to handlers
     this->appleptrauth = hasApplePtrauth(&M);
+#if LLVM_VERSION_MAJOR >= 17
+    this->opaquepointers = true;
+#else
     this->opaquepointers = !M.getContext().supportsTypedPointers();
+#endif
 
     for (Function &F : M)
       if (toObfuscate(flag, &F, "strenc")) {

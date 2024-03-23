@@ -10,6 +10,7 @@
 #include "llvm/IR/NoFolder.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include <set>
 #include <sstream>
 
 using namespace llvm;

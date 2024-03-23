@@ -13,7 +13,11 @@
 */
 
 #include "llvm/Transforms/Obfuscation/AntiClassDump.h"
+#if LLVM_VERSION_MAJOR >= 17
+#include "llvm/TargetParser/Triple.h"
+#else
 #include "llvm/ADT/Triple.h"
+#endif
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
@@ -77,7 +81,11 @@ struct AntiClassDump : public ModulePass {
         FunctionType::get(Int8PtrTy, {Int8PtrTy}, false);
     M.getOrInsertFunction("objc_getMetaClass", objc_getMetaClass_Type);
     appleptrauth = hasApplePtrauth(&M);
+#if LLVM_VERSION_MAJOR >= 17
+    opaquepointers = true;
+#else
     opaquepointers = !M.getContext().supportsTypedPointers();
+#endif
     return true;
   }
   bool runOnModule(Module &M) override {

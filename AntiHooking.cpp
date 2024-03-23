@@ -15,7 +15,6 @@
     You should have received a copy of the GNU Affero General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
@@ -28,6 +27,12 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
+#if LLVM_VERSION_MAJOR >= 17
+#include "llvm/ADT/SmallString.h"
+#include "llvm/TargetParser/Triple.h"
+#else
+#include "llvm/ADT/Triple.h"
+#endif
 #include "llvm/Transforms/Obfuscation/AntiHook.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
@@ -105,7 +110,11 @@ struct AntiHook : public ModulePass {
       errs() << "Failed To Link PreCompiled AntiHooking IR From:"
              << PreCompiledIRPath << "\n";
     }
-    this->opaquepointers = !M.getContext().supportsTypedPointers();
+#if LLVM_VERSION_MAJOR >= 17
+    opaquepointers = true;
+#else
+    opaquepointers = !M.getContext().supportsTypedPointers();
+#endif
 
     if (triple.getVendor() == Triple::VendorType::Apple &&
         StructType::getTypeByName(M.getContext(), "struct._objc_method")) {
