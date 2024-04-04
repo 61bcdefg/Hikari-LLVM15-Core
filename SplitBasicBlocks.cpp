@@ -41,7 +41,7 @@ struct SplitBasicBlock : public FunctionPass {
     return true;
   }
   void split(Function *F) {
-    std::vector<BasicBlock *> origBB;
+    SmallVector<BasicBlock *, 16> origBB;
     size_t split_ctr = 0;
 
     // Save all basic blocks
@@ -60,7 +60,7 @@ struct SplitBasicBlock : public FunctionPass {
 
       // Generate splits point (count number of the LLVM instructions in the
       // current BB)
-      std::vector<size_t> llvm_inst_ord;
+      SmallVector<size_t, 32> llvm_inst_ord;
       for (size_t i = 1; i < currBB->size(); ++i)
         llvm_inst_ord.emplace_back(i);
 
@@ -112,7 +112,7 @@ struct SplitBasicBlock : public FunctionPass {
     return false;
   }
 
-  void split_point_shuffle(std::vector<size_t> &vec) {
+  void split_point_shuffle(SmallVector<size_t, 32> &vec) {
     int n = vec.size();
     for (int i = n - 1; i > 0; --i)
       std::swap(vec[i], vec[cryptoutils->get_range(i + 1)]);

@@ -176,7 +176,7 @@ struct Obfuscation : public ModulePass {
     MP->runOnModule(M);
     delete MP;
     // Cleanup Flags
-    std::vector<Function *> toDelete;
+    SmallVector<Function *, 4> toDelete;
     for (Function &F : M)
       if (F.isDeclaration() && F.hasName() && F.getName().contains("hikari_")) {
         for (User *U : F.users())

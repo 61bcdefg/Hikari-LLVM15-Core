@@ -129,8 +129,8 @@ struct Substitution : public FunctionPass {
             break;
           default:
             break;
-          }            // End switch
-        }              // End isBinaryOp
+          } // End switch
+        } // End isBinaryOp
     } while (--times); // for times
     return true;
   }

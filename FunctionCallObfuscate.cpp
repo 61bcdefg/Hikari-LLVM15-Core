@@ -106,7 +106,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     return true;
   }
   void HandleObjC(Function *F) {
-    std::set<GlobalVariable *> objcclassgv, objcselgv;
+    SmallPtrSet<GlobalVariable *, 8> objcclassgv, objcselgv;
     for (Instruction &I : instructions(F))
       for (Value *Op : I.operands())
         if (GlobalVariable *G =
@@ -120,7 +120,7 @@ struct FunctionCallObfuscate : public FunctionPass {
             objcselgv.insert(G);
         }
     Module *M = F->getParent();
-    std::vector<Instruction *> toErase;
+    SmallVector<Instruction *, 8> toErase;
     for (GlobalVariable *GV : objcclassgv) {
       // Iterate all CLASSREF uses and replace with objc_getClass() call
       // Strings are encrypted in other passes
