@@ -31,8 +31,8 @@ bool valueEscapes(Instruction *Inst) {
 
 void fixStack(Function *f) {
   // Try to remove phi node and demote reg to stack
-  std::vector<PHINode *> tmpPhi;
-  std::vector<Instruction *> tmpReg;
+  SmallVector<PHINode *, 8> tmpPhi;
+  SmallVector<Instruction *, 32> tmpReg;
   BasicBlock *bbEntry = &*f->begin();
   // Find first non-alloca instruction and create insertion point. This is
   // safe if block is well-formed: it always have terminator, otherwise
@@ -204,7 +204,7 @@ void turnOffOptimization(Function *f) {
   }
 }
 
-inline std::vector<std::string> splitString(std::string str) {
+static inline std::vector<std::string> splitString(std::string str) {
   std::stringstream ss(str);
   std::string word;
   std::vector<std::string> words;
@@ -276,7 +276,7 @@ void writeAnnotationMetadata(Function *f, std::string annotation) {
 }
 
 bool AreUsersInOneFunction(GlobalVariable *GV) {
-  std::set<Function *> userFunctions;
+  SmallPtrSet<Function *, 6> userFunctions;
   for (User *U : GV->users()) {
     if (Instruction *I = dyn_cast<Instruction>(U)) {
       userFunctions.insert(I->getFunction());

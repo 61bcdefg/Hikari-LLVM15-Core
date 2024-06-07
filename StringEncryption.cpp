@@ -30,8 +30,8 @@ struct StringEncryption : public ModulePass {
   std::map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
       encstatus;
   std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> mgv2keys;
-  std::map<Constant *, std::vector<unsigned int>> unencryptedindex;
-  std::vector<GlobalVariable *> genedgv;
+  std::map<Constant *, SmallVector<unsigned int, 16>> unencryptedindex;
+  SmallVector<GlobalVariable *, 32> genedgv;
   StringEncryption() : ModulePass(ID) { this->flag = true; }
 
   StringEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
@@ -84,8 +84,8 @@ struct StringEncryption : public ModulePass {
   }
 
   void processStructMembers(ConstantStruct *CS,
-                            std::vector<GlobalVariable *> *unhandleablegvs,
-                            std::vector<GlobalVariable *> *Globals,
+                            SmallVector<GlobalVariable *, 32> *unhandleablegvs,
+                            SmallVector<GlobalVariable *, 32> *Globals,
                             std::set<User *> *Users, bool *breakFor) {
     for (unsigned i = 0; i < CS->getNumOperands(); i++) {
       Constant *Op = CS->getOperand(i);
@@ -111,8 +111,8 @@ struct StringEncryption : public ModulePass {
   }
 
   void processArrayMembers(ConstantArray *CA,
-                           std::vector<GlobalVariable *> *unhandleablegvs,
-                           std::vector<GlobalVariable *> *Globals,
+                           SmallVector<GlobalVariable *, 32> *unhandleablegvs,
+                           SmallVector<GlobalVariable *, 32> *Globals,
                            std::set<User *> *Users, bool *breakFor) {
     for (unsigned i = 0; i < CA->getNumOperands(); i++) {
       Constant *Op = CA->getOperand(i);
@@ -139,7 +139,7 @@ struct StringEncryption : public ModulePass {
 
   void HandleFunction(Function *Func) {
     FixFunctionConstantExpr(Func);
-    std::vector<GlobalVariable *> Globals;
+    SmallVector<GlobalVariable *, 32> Globals;
     std::set<User *> Users;
     for (Instruction &I : instructions(Func))
       for (Value *Op : I.operands())
@@ -166,7 +166,7 @@ struct StringEncryption : public ModulePass {
 
     Module *M = Func->getParent();
 
-    std::vector<GlobalVariable *> transedGlobals, unhandleablegvs;
+    SmallVector<GlobalVariable *, 32> transedGlobals, unhandleablegvs;
 
     do {
       for (GlobalVariable *GV : Globals) {
@@ -484,13 +484,13 @@ struct StringEncryption : public ModulePass {
                       StatusGV, C->getFirstNonPHIOrDbgOrLifetime());
     SI->setAlignment(Align(4));
     SI->setAtomic(AtomicOrdering::Release); // Release the lock acquired in LI
-  }                                         // End of HandleFunction
+  } // End of HandleFunction
 
   GlobalVariable *ObjectiveCString(GlobalVariable *GV, std::string name,
                                    GlobalVariable *newString,
                                    ConstantStruct *CS) {
     Value *zero = ConstantInt::get(Type::getInt32Ty(GV->getContext()), 0);
-    std::vector<Constant *> vals;
+    SmallVector<Constant *, 4> vals;
     vals.emplace_back(CS->getOperand(0));
     vals.emplace_back(CS->getOperand(1));
     Constant *GEPed = ConstantExpr::getInBoundsGetElementPtr(

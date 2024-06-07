@@ -194,7 +194,7 @@ static void RemoveDeadConstant(Constant *C) {
 struct BogusControlFlow : public FunctionPass {
   static char ID; // Pass identification
   bool flag;
-  std::vector<ICmpInst *> needtoedit;
+  SmallVector<const ICmpInst *, 8> needtoedit;
   BogusControlFlow() : FunctionPass(ID) { this->flag = true; }
   BogusControlFlow(bool flag) : FunctionPass(ID) { this->flag = flag; }
   /* runOnFunction
@@ -615,8 +615,8 @@ struct BogusControlFlow : public FunctionPass {
         }
       }
       // Remove DIs from AlterBB
-      std::vector<CallInst *> toRemove;
-      std::vector<Constant *> DeadConstants;
+      SmallVector<CallInst *, 4> toRemove;
+      SmallVector<Constant *, 4> DeadConstants;
       for (Instruction &I : *alteredBB) {
         if (CallInst *CI = dyn_cast<CallInst>(&I)) {
           if (CI->getCalledFunction() != nullptr &&
@@ -683,7 +683,7 @@ struct BogusControlFlow : public FunctionPass {
                                  &ConditionExpressionComplexityTemp))
       ConditionExpressionComplexityTemp = ConditionExpressionComplexity;
 
-    std::vector<Instruction *> toEdit, toDelete;
+    SmallVector<Instruction *, 8> toEdit, toDelete;
     // Looking for the conditions and branches to transform
     for (BasicBlock &BB : F) {
       Instruction *tbb = BB.getTerminator();
@@ -801,7 +801,7 @@ struct BogusControlFlow : public FunctionPass {
       i->eraseFromParent();
     return true;
   } // end of doFinalization
-};  // end of struct BogusControlFlow : public FunctionPass
+}; // end of struct BogusControlFlow : public FunctionPass
 } // namespace llvm
 
 char BogusControlFlow::ID = 0;

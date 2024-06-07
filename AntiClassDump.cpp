@@ -95,8 +95,8 @@ struct AntiClassDump : public ModulePass {
     assert(OBJC_LABEL_CLASS_CDS &&
            "OBJC_LABEL_CLASS_$ Not ConstantArray.Is the target using "
            "unsupported legacy runtime?");
-    std::vector<std::string> readyclses; // This is for storing classes that can
-                                         // be used in handleClass()
+    SmallVector<std::string, 1> readyclses; // This is for storing classes that
+                                            // can be used in handleClass()
     std::deque<std::string> tmpclses; // This is temporary storage for classes
     std::map<std::string /*class*/, std::string /*super class*/> dependency;
     std::map<std::string /*Class*/, GlobalVariable *>
@@ -290,8 +290,8 @@ struct AntiClassDump : public ModulePass {
           metaclassCS->getAggregateElement(5)->stripPointerCasts()));
       StructType *oldGVType =
           cast<StructType>(methodListGV->getInitializer()->getType());
-      std::vector<Type *> newStructType;
-      std::vector<Constant *> newStructValue;
+      SmallVector<Type *, 3> newStructType;
+      SmallVector<Constant *, 3> newStructValue;
       // I'm fully aware that it's consistent Int32 on all platforms
       // This is future-proof
       newStructType.emplace_back(oldGVType->getElementType(0));

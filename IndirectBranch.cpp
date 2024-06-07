@@ -45,7 +45,7 @@ struct IndirectBranch : public FunctionPass {
   }
   StringRef getPassName() const override { return "IndirectBranch"; }
   bool initialize(Module &M) {
-    std::vector<Constant *> BBs;
+    SmallVector<Constant *, 32> BBs;
     unsigned long long i = 0;
     for (Function &F : M) {
       if (!toObfuscate(flag, &F, "indibr"))
@@ -95,7 +95,7 @@ struct IndirectBranch : public FunctionPass {
     if (!this->initialized)
       initialize(*M);
     errs() << "Running IndirectBranch On " << Func.getName() << "\n";
-    std::vector<BranchInst *> BIs;
+    SmallVector<BranchInst *, 32> BIs;
     for (Instruction &Inst : instructions(Func))
       if (BranchInst *BI = dyn_cast<BranchInst>(&Inst))
         BIs.emplace_back(BI);
@@ -114,7 +114,7 @@ struct IndirectBranch : public FunctionPass {
               (BasicBlock::iterator)Func.getEntryBlock().front())
         IRBEntry->SetInsertPoint(Func.getEntryBlock().getTerminator());
       IRBuilder<NoFolder> *IRBBI = new IRBuilder<NoFolder>(BI);
-      std::vector<BasicBlock *> BBs;
+      SmallVector<BasicBlock *, 16> BBs;
       // We use the condition's evaluation result to generate the GEP
       // instruction  False evaluates to 0 while true evaluates to 1.  So here
       // we insert the false block first
@@ -127,7 +127,7 @@ struct IndirectBranch : public FunctionPass {
       if (BI->isConditional() ||
           indexmap.find(BI->getSuccessor(0)) == indexmap.end()) {
         ArrayType *AT = ArrayType::get(Int8PtrTy, BBs.size());
-        std::vector<Constant *> BlockAddresses;
+        SmallVector<Constant *, 16> BlockAddresses;
         for (BasicBlock *BB : BBs)
           BlockAddresses.emplace_back(
               EncryptJumpTargetTemp ? ConstantExpr::getGetElementPtr(
@@ -146,8 +146,11 @@ struct IndirectBranch : public FunctionPass {
       } else {
         LoadFrom = M->getGlobalVariable("IndirectBranchingGlobalTable", true);
       }
-      AllocaInst *LoadFromAI = IRBEntry->CreateAlloca(LoadFrom->getType());
-      IRBEntry->CreateStore(LoadFrom, LoadFromAI);
+      AllocaInst *LoadFromAI = nullptr;
+      if (UseStackTemp) {
+        LoadFromAI = IRBEntry->CreateAlloca(LoadFrom->getType());
+        IRBEntry->CreateStore(LoadFrom, LoadFromAI);
+      }
       Value *index, *RealIndex = nullptr;
       if (BI->isConditional()) {
         Value *condition = BI->getCondition();
@@ -234,12 +237,15 @@ struct IndirectBranch : public FunctionPass {
     return true;
   }
   void shuffleBasicBlocks(Function &F) {
-    std::vector<BasicBlock *> blocks;
+    SmallVector<BasicBlock *, 32> blocks;
     for (BasicBlock &block : F)
       if (!block.isEntryBlock())
         blocks.emplace_back(&block);
 
-    for (int i = blocks.size() - 1; i > 0; i--)
+    if (blocks.size() < 2)
+      return;
+
+    for (size_t i = blocks.size() - 1; i > 0; i--)
       std::swap(blocks[i], blocks[cryptoutils->get_range(i + 1)]);
 
     Function::iterator fi = F.begin();

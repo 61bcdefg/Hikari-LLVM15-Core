@@ -38,7 +38,7 @@ struct FunctionWrapper : public ModulePass {
   FunctionWrapper(bool flag) : ModulePass(ID) { this->flag = flag; }
   StringRef getPassName() const override { return "FunctionWrapper"; }
   bool runOnModule(Module &M) override {
-    std::vector<CallSite *> callsites;
+    SmallVector<CallSite *, 16> callsites;
     for (Function &F : M) {
       if (toObfuscate(flag, &F, "fw")) {
         errs() << "Running FunctionWrapper On " << F.getName() << "\n";
@@ -74,7 +74,7 @@ struct FunctionWrapper : public ModulePass {
          !isa<Function>(calledFunction)) ||
         CS->getIntrinsicID() != Intrinsic::not_intrinsic)
       return nullptr;
-    std::vector<unsigned int> byvalArgNums;
+    SmallVector<unsigned int, 8> byvalArgNums;
     if (Function *tmp = dyn_cast<Function>(calledFunction)) {
       if (tmp->getName().startswith("clang.")) {
         // Clang Intrinsic
@@ -89,7 +89,7 @@ struct FunctionWrapper : public ModulePass {
       }
     }
     // Create a new function which in turn calls the actual function
-    std::vector<Type *> types;
+    SmallVector<Type *, 8> types;
     for (unsigned int i = 0; i < CS->getNumArgOperands(); i++)
       types.emplace_back(CS->getArgOperand(i)->getType());
     FunctionType *ft =
@@ -102,7 +102,7 @@ struct FunctionWrapper : public ModulePass {
     // exist in all objects
     appendToCompilerUsed(*func->getParent(), {func});
     BasicBlock *BB = BasicBlock::Create(func->getContext(), "", func);
-    std::vector<Value *> params;
+    SmallVector<Value *, 8> params;
     if (byvalArgNums.empty())
       for (Argument &arg : func->args())
         params.emplace_back(&arg);

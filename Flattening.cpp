@@ -39,7 +39,7 @@ bool Flattening::runOnFunction(Function &F) {
 }
 
 void Flattening::flatten(Function *f) {
-  std::vector<BasicBlock *> origBB;
+  SmallVector<BasicBlock *, 8> origBB;
   BasicBlock *loopEntry, *loopEnd;
   LoadInst *load;
   SwitchInst *switchI;

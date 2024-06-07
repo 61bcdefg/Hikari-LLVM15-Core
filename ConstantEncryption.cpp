@@ -101,7 +101,6 @@ struct ConstantEncryption : public ModulePass {
   }
   bool runOnModule(Module &M) override {
     dispatchonce = M.getFunction("dispatch_once");
-    const DataLayout &DL = M.getDataLayout();
     for (Function &F : M)
       if (toObfuscate(flag, &F, "constenc") && !F.isPresplitCoroutine()) {
         errs() << "Running ConstantEncryption On " << F.getName() << "\n";
@@ -121,75 +120,9 @@ struct ConstantEncryption : public ModulePass {
           SubstituteXorTemp = SubstituteXor;
         uint32_t times = ObfTimesTemp;
         while (times) {
-          for (Instruction &I : instructions(F)) {
-            if (!shouldEncryptConstant(&I))
-              continue;
-            CallInst *CI = dyn_cast<CallInst>(&I);
-            for (unsigned i = 0; i < I.getNumOperands(); i++) {
-              if (CI && CI->isBundleOperand(i))
-                continue;
-              Value *Op = I.getOperand(i);
-              if (isa<ConstantInt>(Op))
-                HandleConstantIntOperand(&I, i);
-              if (GlobalVariable *G = dyn_cast<GlobalVariable>(Op))
-                if (G->hasInitializer() &&
-                    (G->hasPrivateLinkage() || G->hasInternalLinkage()) &&
-                    isa<ConstantInt>(G->getInitializer()))
-                  HandleConstantIntInitializerGV(G);
-            }
-          }
+          EncryptConstants(F);
           if (ConstToGVTemp) {
-            std::vector<Instruction *> ins;
-            for (Instruction &I : instructions(F)) {
-              if (!shouldEncryptConstant(&I))
-                continue;
-              CallInst *CI = dyn_cast<CallInst>(&I);
-              for (unsigned int i = 0; i < I.getNumOperands(); i++) {
-                if (CI && CI->isBundleOperand(i))
-                  continue;
-                if (ConstantInt *CI = dyn_cast<ConstantInt>(I.getOperand(i))) {
-                  GlobalVariable *GV = new GlobalVariable(
-                      M, CI->getType(), false,
-                      GlobalValue::LinkageTypes::PrivateLinkage,
-                      ConstantInt::get(CI->getType(), CI->getValue()),
-                      "ConstantEncryptionConstToGlobal");
-                  appendToCompilerUsed(M, GV);
-                  I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
-                }
-              }
-              ins.emplace_back(&I);
-            }
-            for (Instruction *I : ins) {
-              if (BinaryOperator *BO = dyn_cast<BinaryOperator>(I)) {
-                if (!BO->getType()->isIntegerTy())
-                  continue;
-                IntegerType *IT = cast<IntegerType>(BO->getType());
-                uint64_t dummy = 0;
-                if (IT->getBitWidth() == 8)
-                  dummy = cryptoutils->get_uint8_t();
-                else if (IT->getBitWidth() == 16)
-                  dummy = cryptoutils->get_uint16_t();
-                else if (IT->getBitWidth() == 32)
-                  dummy = cryptoutils->get_uint32_t();
-                else if (IT->getBitWidth() == 64)
-                  dummy = cryptoutils->get_uint64_t();
-                else if (IT->getBitWidth() != 0)
-                  continue;
-                GlobalVariable *GV = new GlobalVariable(
-                    M, BO->getType(), false,
-                    GlobalValue::LinkageTypes::PrivateLinkage,
-                    ConstantInt::get(BO->getType(), dummy),
-                    "ConstantEncryptionBOStore");
-                StoreInst *SI = new StoreInst(
-                    BO, GV, false, DL.getABITypeAlign(BO->getType()));
-                SI->insertAfter(BO);
-                LoadInst *LI = new LoadInst(GV->getValueType(), GV, "", false,
-                                            DL.getABITypeAlign(BO->getType()));
-                LI->insertAfter(SI);
-                BO->replaceUsesWithIf(
-                    LI, [SI](Use &U) { return U.getUser() != SI; });
-              }
-            }
+            Constant2GlobalVariable(F);
           }
           times--;
         }
@@ -239,6 +172,80 @@ struct ConstantEncryption : public ModulePass {
               }
     }
     return false;
+  }
+
+  void EncryptConstants(Function &F) {
+    for (Instruction &I : instructions(F)) {
+      if (!shouldEncryptConstant(&I))
+        continue;
+      CallInst *CI = dyn_cast<CallInst>(&I);
+      for (unsigned i = 0; i < I.getNumOperands(); i++) {
+        if (CI && CI->isBundleOperand(i))
+          continue;
+        Value *Op = I.getOperand(i);
+        if (isa<ConstantInt>(Op))
+          HandleConstantIntOperand(&I, i);
+        if (GlobalVariable *G = dyn_cast<GlobalVariable>(Op))
+          if (G->hasInitializer() &&
+              (G->hasPrivateLinkage() || G->hasInternalLinkage()) &&
+              isa<ConstantInt>(G->getInitializer()))
+            HandleConstantIntInitializerGV(G);
+      }
+    }
+  }
+
+  void Constant2GlobalVariable(Function &F) {
+    Module &M = *F.getParent();
+    const DataLayout &DL = M.getDataLayout();
+    SmallVector<Instruction *, 32> ins;
+    for (Instruction &I : instructions(F)) {
+      if (!shouldEncryptConstant(&I))
+        continue;
+      CallInst *CI = dyn_cast<CallInst>(&I);
+      for (unsigned int i = 0; i < I.getNumOperands(); i++) {
+        if (CI && CI->isBundleOperand(i))
+          continue;
+        if (ConstantInt *CI = dyn_cast<ConstantInt>(I.getOperand(i))) {
+          GlobalVariable *GV = new GlobalVariable(
+              *F.getParent(), CI->getType(), false,
+              GlobalValue::LinkageTypes::PrivateLinkage,
+              ConstantInt::get(CI->getType(), CI->getValue()),
+              "ConstantEncryptionConstToGlobal");
+          appendToCompilerUsed(*F.getParent(), GV);
+          I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
+        }
+      }
+      ins.emplace_back(&I);
+    }
+    for (Instruction *I : ins) {
+      if (BinaryOperator *BO = dyn_cast<BinaryOperator>(I)) {
+        if (!BO->getType()->isIntegerTy())
+          continue;
+        IntegerType *IT = cast<IntegerType>(BO->getType());
+        uint64_t dummy = 0;
+        if (IT->getBitWidth() == 8)
+          dummy = cryptoutils->get_uint8_t();
+        else if (IT->getBitWidth() == 16)
+          dummy = cryptoutils->get_uint16_t();
+        else if (IT->getBitWidth() == 32)
+          dummy = cryptoutils->get_uint32_t();
+        else if (IT->getBitWidth() == 64)
+          dummy = cryptoutils->get_uint64_t();
+        else if (IT->getBitWidth() != 0)
+          continue;
+        GlobalVariable *GV = new GlobalVariable(
+            M, BO->getType(), false, GlobalValue::LinkageTypes::PrivateLinkage,
+            ConstantInt::get(BO->getType(), dummy),
+            "ConstantEncryptionBOStore");
+        StoreInst *SI =
+            new StoreInst(BO, GV, false, DL.getABITypeAlign(BO->getType()));
+        SI->insertAfter(BO);
+        LoadInst *LI = new LoadInst(GV->getValueType(), GV, "", false,
+                                    DL.getABITypeAlign(BO->getType()));
+        LI->insertAfter(SI);
+        BO->replaceUsesWithIf(LI, [SI](Use &U) { return U.getUser() != SI; });
+      }
+    }
   }
 
   void HandleConstantIntInitializerGV(GlobalVariable *GVPtr) {
