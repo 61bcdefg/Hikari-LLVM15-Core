@@ -105,8 +105,22 @@ struct FunctionCallObfuscate : public FunctionPass {
 #endif
     return true;
   }
+
+  bool OnlyUsedByCompilerUsed(GlobalVariable *GV) {
+    if (GV->getNumUses() == 1) {
+      User *U = GV->user_back();
+      if (U->getNumUses() == 1) {
+        if (GlobalVariable *GVU = dyn_cast<GlobalVariable>(U->user_back())) {
+          if (GVU->getName() == "llvm.compiler.used")
+            return true;
+        }
+      }
+    }
+    return false;
+  }
+
   void HandleObjC(Function *F) {
-    SmallPtrSet<GlobalVariable *, 8> objcclassgv, objcselgv;
+    SmallPtrSet<GlobalVariable *, 8> objcclassgv, objcselgv, selnamegv;
     for (Instruction &I : instructions(F))
       for (Value *Op : I.operands())
         if (GlobalVariable *G =
@@ -148,6 +162,7 @@ struct FunctionCallObfuscate : public FunctionPass {
           opaquepointers
               ? GV->getInitializer()
               : cast<ConstantExpr>(GV->getInitializer())->getOperand(0));
+      selnamegv.insert(selgv);
       ConstantDataArray *CDA =
           dyn_cast<ConstantDataArray>(selgv->getInitializer());
       StringRef SELName = CDA->getAsString(); // This is REAL Selector Name
@@ -166,22 +181,39 @@ struct FunctionCallObfuscate : public FunctionPass {
                                    // have problems releasing the IRBuilder.
         }
     }
+    for (Instruction *I : toErase)
+      I->eraseFromParent();
     for (GlobalVariable *GV : objcclassgv) {
       GV->removeDeadConstantUsers();
+      if (OnlyUsedByCompilerUsed(GV)) {
+        GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
+      }
       if (GV->getNumUses() == 0) {
         GV->dropAllReferences();
         GV->eraseFromParent();
+        continue;
       }
     }
     for (GlobalVariable *GV : objcselgv) {
       GV->removeDeadConstantUsers();
+      if (OnlyUsedByCompilerUsed(GV)) {
+        GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
+      }
       if (GV->getNumUses() == 0) {
         GV->dropAllReferences();
         GV->eraseFromParent();
       }
     }
-    for (Instruction *I : toErase)
-      I->eraseFromParent();
+    for (GlobalVariable *GV : selnamegv) {
+      GV->removeDeadConstantUsers();
+      if (OnlyUsedByCompilerUsed(GV)) {
+        GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
+      }
+      if (GV->getNumUses() == 0) {
+        GV->dropAllReferences();
+        GV->eraseFromParent();
+      }
+    }
   }
   bool runOnFunction(Function &F) override {
     // Construct Function Prototypes
