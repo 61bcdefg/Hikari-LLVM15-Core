@@ -64,8 +64,7 @@ struct ConstantEncryption : public ModulePass {
   static char ID;
   bool flag;
   bool dispatchonce;
-  std::unordered_map<GlobalVariable *, std::pair<ConstantInt *, ConstantInt *>>
-      gv2pair;
+  std::set<GlobalVariable *> handled_gvs;
   ConstantEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
   ConstantEncryption() : ModulePass(ID) { this->flag = true; }
   bool shouldEncryptConstant(Instruction *I) {
@@ -198,7 +197,6 @@ struct ConstantEncryption : public ModulePass {
   void Constant2GlobalVariable(Function &F) {
     Module &M = *F.getParent();
     const DataLayout &DL = M.getDataLayout();
-    SmallVector<Instruction *, 32> ins;
     for (Instruction &I : instructions(F)) {
       if (!shouldEncryptConstant(&I))
         continue;
@@ -216,10 +214,11 @@ struct ConstantEncryption : public ModulePass {
           I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
         }
       }
-      ins.emplace_back(&I);
     }
-    for (Instruction *I : ins) {
-      if (BinaryOperator *BO = dyn_cast<BinaryOperator>(I)) {
+    for (Instruction &I : instructions(F)) {
+      if (!shouldEncryptConstant(&I))
+        continue;
+      if (BinaryOperator *BO = dyn_cast<BinaryOperator>(&I)) {
         if (!BO->getType()->isIntegerTy())
           continue;
         IntegerType *IT = cast<IntegerType>(BO->getType());
@@ -253,17 +252,17 @@ struct ConstantEncryption : public ModulePass {
     if (!(flag || AreUsersInOneFunction(GVPtr)) || isDispatchOnceToken(GVPtr))
       return;
     // Prepare Types and Keys
+    std::pair<ConstantInt *, ConstantInt *> keyandnew;
     bool hasHandled = true;
-    std::pair<ConstantInt *, ConstantInt *> keyandnew = gv2pair[GVPtr];
-    if (!keyandnew.first || !keyandnew.second) {
+    if (handled_gvs.find(GVPtr) == handled_gvs.end()) {
+      hasHandled = false;
       ConstantInt *CI = dyn_cast<ConstantInt>(GVPtr->getInitializer());
       keyandnew = PairConstantInt(CI);
-      gv2pair[GVPtr] = keyandnew;
-      hasHandled = false;
+      handled_gvs.insert(GVPtr);
     }
     ConstantInt *XORKey = keyandnew.first;
     ConstantInt *newGVInit = keyandnew.second;
-    if (!XORKey || !newGVInit || hasHandled)
+    if (hasHandled || !XORKey || !newGVInit)
       return;
     GVPtr->setInitializer(newGVInit);
     for (User *U : GVPtr->users()) {
