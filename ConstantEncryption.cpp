@@ -64,7 +64,8 @@ struct ConstantEncryption : public ModulePass {
   static char ID;
   bool flag;
   bool dispatchonce;
-  std::map<GlobalVariable *, std::pair<ConstantInt *, ConstantInt *>> gv2pair;
+  std::unordered_map<GlobalVariable *, std::pair<ConstantInt *, ConstantInt *>>
+      gv2pair;
   ConstantEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
   ConstantEncryption() : ModulePass(ID) { this->flag = true; }
   bool shouldEncryptConstant(Instruction *I) {
