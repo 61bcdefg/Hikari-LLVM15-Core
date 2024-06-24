@@ -28,10 +28,13 @@ struct StringEncryption : public ModulePass {
   bool flag;
   bool appleptrauth;
   bool opaquepointers;
-  std::map<Function * /*Function*/, GlobalVariable * /*Decryption Status*/>
+  std::unordered_map<Function * /*Function*/,
+                     GlobalVariable * /*Decryption Status*/>
       encstatus;
-  std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> mgv2keys;
-  std::map<Constant *, SmallVector<unsigned int, 16>> unencryptedindex;
+  std::unordered_map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>>
+      mgv2keys;
+  std::unordered_map<Constant *, SmallVector<unsigned int, 16>>
+      unencryptedindex;
   SmallVector<GlobalVariable *, 32> genedgv;
   StringEncryption() : ModulePass(ID) { this->flag = true; }
 
@@ -157,10 +160,12 @@ struct StringEncryption : public ModulePass {
         }
     std::set<GlobalVariable *> rawStrings;
     std::set<GlobalVariable *> objCStrings;
-    std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>> GV2Keys;
-    std::map<GlobalVariable * /*old*/,
-             std::pair<GlobalVariable * /*encrypted*/,
-                       GlobalVariable * /*decrypt space*/>>
+    std::unordered_map<GlobalVariable *,
+                       std::pair<Constant *, GlobalVariable *>>
+        GV2Keys;
+    std::unordered_map<GlobalVariable * /*old*/,
+                       std::pair<GlobalVariable * /*encrypted*/,
+                                 GlobalVariable * /*decrypt space*/>>
         old2new;
 
     auto end = Globals.end();
@@ -372,9 +377,10 @@ struct StringEncryption : public ModulePass {
       return;
     // Replace Uses
     for (User *U : Users) {
-      for (std::map<GlobalVariable *,
-                    std::pair<GlobalVariable *, GlobalVariable *>>::iterator
-               iter = old2new.begin();
+      for (std::unordered_map<
+               GlobalVariable *,
+               std::pair<GlobalVariable *, GlobalVariable *>>::iterator iter =
+               old2new.begin();
            iter != old2new.end(); ++iter) {
         U->replaceUsesOfWith(iter->first, iter->second.second);
         iter->first->removeDeadConstantUsers();
@@ -430,9 +436,10 @@ struct StringEncryption : public ModulePass {
       }
     }
     // CleanUp Old Raw GVs
-    for (std::map<GlobalVariable *,
-                  std::pair<GlobalVariable *, GlobalVariable *>>::iterator
-             iter = old2new.begin();
+    for (std::unordered_map<
+             GlobalVariable *,
+             std::pair<GlobalVariable *, GlobalVariable *>>::iterator iter =
+             old2new.begin();
          iter != old2new.end(); ++iter) {
       GlobalVariable *toDelete = iter->first;
       toDelete->removeDeadConstantUsers();
@@ -535,13 +542,13 @@ struct StringEncryption : public ModulePass {
 
   void HandleDecryptionBlock(
       BasicBlock *B, BasicBlock *C,
-      std::map<GlobalVariable *, std::pair<Constant *, GlobalVariable *>>
-          &GV2Keys) {
+      std::unordered_map<GlobalVariable *,
+                         std::pair<Constant *, GlobalVariable *>> &GV2Keys) {
     IRBuilder<> IRB(B);
     Value *zero = ConstantInt::get(Type::getInt32Ty(B->getContext()), 0);
-    for (std::map<GlobalVariable *,
-                  std::pair<Constant *, GlobalVariable *>>::iterator iter =
-             GV2Keys.begin();
+    for (std::unordered_map<GlobalVariable *,
+                            std::pair<Constant *, GlobalVariable *>>::iterator
+             iter = GV2Keys.begin();
          iter != GV2Keys.end(); ++iter) {
       Constant *KeyConst = iter->second.first;
       ConstantDataArray *CastedCDA = cast<ConstantDataArray>(KeyConst);

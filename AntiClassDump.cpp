@@ -106,8 +106,9 @@ struct AntiClassDump : public ModulePass {
     SmallVector<std::string, 1> readyclses; // This is for storing classes that
                                             // can be used in handleClass()
     std::deque<std::string> tmpclses; // This is temporary storage for classes
-    std::map<std::string /*class*/, std::string /*super class*/> dependency;
-    std::map<std::string /*Class*/, GlobalVariable *>
+    std::unordered_map<std::string /*class*/, std::string /*super class*/>
+        dependency;
+    std::unordered_map<std::string /*Class*/, GlobalVariable *>
         GVMapping; // Map ClassName to corresponding GV
     for (unsigned int i = 0; i < OBJC_LABEL_CLASS_CDS->getNumOperands(); i++) {
       ConstantExpr *clsEXPR =
@@ -168,10 +169,10 @@ struct AntiClassDump : public ModulePass {
     }
     return true;
   } // runOnModule
-  std::map<std::string, Value *>
+  std::unordered_map<std::string, Value *>
   splitclass_ro_t(ConstantStruct *class_ro,
                   Module *M) { // Split a class_ro_t structure
-    std::map<std::string, Value *> info;
+    std::unordered_map<std::string, Value *> info;
     StructType *objc_method_list_t_type =
         StructType::getTypeByName(M->getContext(), "struct.__method_list_t");
     for (unsigned i = 0; i < class_ro->getType()->getNumElements(); i++) {
@@ -232,7 +233,7 @@ struct AntiClassDump : public ModulePass {
             ->getOperand(metaclassGV->getInitializer()->getNumOperands() - 1)
             ->stripPointerCasts()));
     // Begin IRBuilder Initializing
-    std::map<std::string, Value *> Info = splitclass_ro_t(
+    std::unordered_map<std::string, Value *> Info = splitclass_ro_t(
         cast<ConstantStruct>(metaclass_ro->getInitializer()), M);
     BasicBlock *EntryBB = nullptr;
     if (Info.find("METHODLIST") != Info.end()) {

@@ -48,7 +48,7 @@ void Flattening::flatten(Function *f) {
   const DataLayout &DL = f->getParent()->getDataLayout();
 
   // SCRAMBLER
-  std::map<uint32_t, uint32_t> scrambling_key;
+  std::unordered_map<uint32_t, uint32_t> scrambling_key;
   // END OF SCRAMBLER
 
   PassBuilder PB;

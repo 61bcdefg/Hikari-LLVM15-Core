@@ -35,8 +35,8 @@ struct IndirectBranch : public FunctionPass {
   static char ID;
   bool flag;
   bool initialized;
-  std::map<BasicBlock *, unsigned long long> indexmap;
-  std::map<Function *, ConstantInt *> encmap;
+  std::unordered_map<BasicBlock *, unsigned long long> indexmap;
+  std::unordered_map<Function *, ConstantInt *> encmap;
   IndirectBranch() : FunctionPass(ID) {
     this->flag = true;
     this->initialized = false;
