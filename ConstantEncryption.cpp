@@ -28,6 +28,7 @@
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/CallSite.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <set>
 
 using namespace llvm;
 
