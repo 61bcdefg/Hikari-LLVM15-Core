@@ -39,6 +39,13 @@ static cl::opt<bool>
                   cl::Optional);
 static bool SubstituteXorTemp = false;
 
+static cl::opt<uint32_t> SubstituteXorProb(
+    "constenc_subxor_prob",
+    cl::desc(
+        "Choose the probability [%] each xor operator will be Substituted"),
+    cl::value_desc("probability rate"), cl::init(40), cl::Optional);
+static uint32_t SubstituteXorProbTemp = 40;
+
 static cl::opt<bool>
     ConstToGV("constenc_togv",
               cl::desc("Replace ConstantInt with GlobalVariable"),
@@ -47,11 +54,12 @@ static cl::opt<bool>
 static bool ConstToGVTemp = false;
 
 static cl::opt<uint32_t>
-    ObfProbRate("constenc_prob",
-                cl::desc("Choose the probability [%] each instructions will be "
-                         "obfuscated by the ConstantEncryption pass"),
-                cl::value_desc("probability rate"), cl::init(50), cl::Optional);
-static uint32_t ObfProbRateTemp = 50;
+    ConstToGVProb("constenc_togv_prob",
+                  cl::desc("Choose the probability [%] each ConstantInt will "
+                           "replaced with GlobalVariable"),
+                  cl::value_desc("probability rate"), cl::init(50),
+                  cl::Optional);
+static uint32_t ConstToGVProbTemp = 50;
 
 static cl::opt<uint32_t> ObfTimes(
     "constenc_times",
@@ -103,8 +111,6 @@ struct ConstantEncryption : public ModulePass {
                     return false;
                 }
       }
-    if (!(cryptoutils->get_range(100) <= ObfProbRateTemp))
-      return false;
     return true;
   }
   bool runOnModule(Module &M) override {
@@ -113,19 +119,26 @@ struct ConstantEncryption : public ModulePass {
       if (toObfuscate(flag, &F, "constenc") && !F.isPresplitCoroutine()) {
         errs() << "Running ConstantEncryption On " << F.getName() << "\n";
         FixFunctionConstantExpr(&F);
-        if (!toObfuscateUint32Option(&F, "constenc_prob", &ObfProbRateTemp))
-          ObfProbRateTemp = ObfProbRate;
-        if (ObfProbRateTemp > 100) {
-          errs() << "ConstantEncryption application instruction percentage "
-                    "-constenc_prob=x must be 0 < x <= 100";
-          return false;
-        }
         if (!toObfuscateUint32Option(&F, "constenc_times", &ObfTimesTemp))
           ObfTimesTemp = ObfTimes;
         if (!toObfuscateBoolOption(&F, "constenc_togv", &ConstToGVTemp))
           ConstToGVTemp = ConstToGV;
         if (!toObfuscateBoolOption(&F, "constenc_subxor", &SubstituteXorTemp))
           SubstituteXorTemp = SubstituteXor;
+        if (!toObfuscateUint32Option(&F, "constenc_subxor_prob",
+                                     &SubstituteXorProbTemp))
+          SubstituteXorProbTemp = SubstituteXorProb;
+        if (SubstituteXorProbTemp > 100) {
+          errs() << "-constenc_subxor_prob=x must be 0 < x <= 100";
+          return false;
+        }
+        if (!toObfuscateUint32Option(&F, "constenc_togv_prob",
+                                     &ConstToGVProbTemp))
+          ConstToGVProbTemp = ConstToGVProb;
+        if (ConstToGVProbTemp > 100) {
+          errs() << "-constenc_togv_prob=x must be 0 < x <= 100";
+          return false;
+        }
         uint32_t times = ObfTimesTemp;
         while (times) {
           EncryptConstants(F);
@@ -216,6 +229,8 @@ struct ConstantEncryption : public ModulePass {
         if (II && II->isBundleOperand(i))
           continue;
         if (ConstantInt *CI = dyn_cast<ConstantInt>(I.getOperand(i))) {
+          if (!(cryptoutils->get_range(100) <= ConstToGVProbTemp))
+            continue;
           GlobalVariable *GV = new GlobalVariable(
               *F.getParent(), CI->getType(), false,
               GlobalValue::LinkageTypes::PrivateLinkage,
@@ -230,6 +245,8 @@ struct ConstantEncryption : public ModulePass {
         continue;
       if (BinaryOperator *BO = dyn_cast<BinaryOperator>(&I)) {
         if (!BO->getType()->isIntegerTy())
+          continue;
+        if (!(cryptoutils->get_range(100) <= ConstToGVProbTemp))
           continue;
         IntegerType *IT = cast<IntegerType>(BO->getType());
         uint64_t dummy = 0;
@@ -286,7 +303,8 @@ struct ConstantEncryption : public ModulePass {
                                          XORKey, "", SI);
         SI->replaceUsesOfWith(SI->getValueOperand(), XORInst);
       }
-      if (XORInst && SubstituteXorTemp)
+      if (XORInst && SubstituteXorTemp &&
+          cryptoutils->get_range(100) <= SubstituteXorProbTemp)
         SubstituteImpl::substituteXor(XORInst);
     }
   }
@@ -301,7 +319,8 @@ struct ConstantEncryption : public ModulePass {
     BinaryOperator *NewOperand =
         BinaryOperator::Create(Instruction::Xor, New, Key, "", I);
     I->setOperand(opindex, NewOperand);
-    if (SubstituteXorTemp)
+    if (SubstituteXorTemp &&
+        cryptoutils->get_range(100) <= SubstituteXorProbTemp)
       SubstituteImpl::substituteXor(NewOperand);
   }
 
