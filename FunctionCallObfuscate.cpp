@@ -3,7 +3,12 @@
 //===----------------------------------------------------------------------===//
 #include "llvm/Transforms/Obfuscation/FunctionCallObfuscate.h"
 #include "json.hpp"
+#if LLVM_VERSION_MAJOR >= 17
+#include "llvm/ADT/SmallString.h"
+#include "llvm/TargetParser/Triple.h"
+#else
 #include "llvm/ADT/Triple.h"
+#endif
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
@@ -93,7 +98,11 @@ struct FunctionCallObfuscate : public FunctionPass {
       M.getOrInsertFunction("objc_getMetaClass", objc_getMetaClass_Type);
     }
     this->initialized = true;
+#if LLVM_VERSION_MAJOR >= 17
+    this->opaquepointers = true;
+#else
     this->opaquepointers = !M.getContext().supportsTypedPointers();
+#endif
     return true;
   }
 
@@ -253,6 +262,10 @@ struct FunctionCallObfuscate : public FunctionPass {
           // Use our own implementation
           if (!calledFunction)
             continue;
+
+          if (calledFunction->getName().startswith("hikari_"))
+            continue;
+
           // It's only safe to restrict our modification to external symbols
           // Otherwise stripped binary will crash
           if (!calledFunction->empty() ||
