@@ -10,6 +10,7 @@
 #include "llvm/IR/NoFolder.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include <set>
 #include <sstream>
 
 using namespace llvm;
@@ -73,8 +74,29 @@ bool readFlag(Function *f, std::string attribute) {
     Instruction *Inst = &I;
     if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
       if (CI->getCalledFunction() != nullptr &&
-          CI->getCalledFunction()->getName().contains("hikari_" + attribute)) {
+          CI->getCalledFunction()->getName().starts_with("hikari_" +
+                                                         attribute)) {
         CI->eraseFromParent();
+        return true;
+      }
+    }
+    if (InvokeInst *II = dyn_cast<InvokeInst>(Inst)) {
+      if (II->getCalledFunction() != nullptr &&
+          II->getCalledFunction()->getName().starts_with("hikari_" +
+                                                         attribute)) {
+        BasicBlock *normalDest = II->getNormalDest();
+        BasicBlock *unwindDest = II->getUnwindDest();
+        BasicBlock *parent = II->getParent();
+        if (parent->size() == 1) {
+          parent->replaceAllUsesWith(normalDest);
+          II->eraseFromParent();
+          parent->eraseFromParent();
+        } else {
+          BranchInst::Create(normalDest, II);
+          II->eraseFromParent();
+        }
+        if (pred_size(unwindDest) == 0)
+          unwindDest->eraseFromParent();
         return true;
       }
     }
@@ -140,6 +162,28 @@ bool readFlagUint32OptVal(Function *f, std::string opt, uint32_t *val) {
         if (ConstantInt *C = dyn_cast<ConstantInt>(CI->getArgOperand(0))) {
           *val = (uint32_t)C->getValue().getZExtValue();
           CI->eraseFromParent();
+          return true;
+        }
+      }
+    }
+    if (InvokeInst *II = dyn_cast<InvokeInst>(Inst)) {
+      if (II->getCalledFunction() != nullptr &&
+          II->getCalledFunction()->getName().starts_with("hikari_" + opt)) {
+        if (ConstantInt *C = dyn_cast<ConstantInt>(II->getArgOperand(0))) {
+          *val = (uint32_t)C->getValue().getZExtValue();
+          BasicBlock *normalDest = II->getNormalDest();
+          BasicBlock *unwindDest = II->getUnwindDest();
+          BasicBlock *parent = II->getParent();
+          if (parent->size() == 1) {
+            parent->replaceAllUsesWith(normalDest);
+            II->eraseFromParent();
+            parent->eraseFromParent();
+          } else {
+            BranchInst::Create(normalDest, II);
+            II->eraseFromParent();
+          }
+          if (pred_size(unwindDest) == 0)
+            unwindDest->eraseFromParent();
           return true;
         }
       }
