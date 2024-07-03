@@ -262,6 +262,10 @@ struct FunctionCallObfuscate : public FunctionPass {
           // Use our own implementation
           if (!calledFunction)
             continue;
+
+          if (calledFunction->getName().startswith("hikari_"))
+            continue;
+
           // It's only safe to restrict our modification to external symbols
           // Otherwise stripped binary will crash
           if (!calledFunction->empty() ||
