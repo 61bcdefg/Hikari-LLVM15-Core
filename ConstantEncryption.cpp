@@ -75,8 +75,10 @@ struct ConstantEncryption : public ModulePass {
     if (AllocaInst *AI = dyn_cast<AllocaInst>(I))
       if (AI->isSwiftError())
         return false;
-    if (CallInst *CI = dyn_cast<CallInst>(I)) {
-      if (CI->getCalledFunction() && CI->getCalledFunction()->getName().starts_with("hikari_")) {
+    if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
+      CallSite CS(I);
+      if (CS.getCalledFunction() &&
+          CS.getCalledFunction()->getName().starts_with("hikari_")) {
         return false;
       }
     }
@@ -86,8 +88,8 @@ struct ConstantEncryption : public ModulePass {
           for (User *U : AI->users())
             if (LoadInst *LI = dyn_cast<LoadInst>(U))
               for (User *LU : LI->users())
-                if (CallInst *CI = dyn_cast<CallInst>(LU)) {
-                  CallSite CS(CI);
+                if (isa<CallInst>(LU) || isa<InvokeInst>(LU)) {
+                  CallSite CS(LU);
                   Value *calledFunction = CS.getCalledFunction();
                   if (!calledFunction)
                     calledFunction = CS.getCalledValue()->stripPointerCasts();
@@ -140,8 +142,8 @@ struct ConstantEncryption : public ModulePass {
     if (!dispatchonce)
       return false;
     for (User *U : GV->users()) {
-      if (CallInst *CI = dyn_cast<CallInst>(U)) {
-        CallSite CS(CI);
+      if (isa<CallInst>(U) || isa<InvokeInst>(U)) {
+        CallSite CS(U);
         Value *calledFunction = CS.getCalledFunction();
         if (!calledFunction)
           calledFunction = CS.getCalledValue()->stripPointerCasts();
@@ -152,7 +154,7 @@ struct ConstantEncryption : public ModulePass {
           continue;
         if (calledFunction->getName() == "_dispatch_once" ||
             calledFunction->getName() == "dispatch_once") {
-          Value *onceToken = CI->getArgOperand(0);
+          Value *onceToken = U->getOperand(0);
           if (dyn_cast_or_null<GlobalVariable>(
                   onceToken->stripPointerCasts()) == GV)
             return true;
@@ -162,8 +164,8 @@ struct ConstantEncryption : public ModulePass {
         for (User *SU : SI->getPointerOperand()->users())
           if (LoadInst *LI = dyn_cast<LoadInst>(SU))
             for (User *LU : LI->users())
-              if (CallInst *CI = dyn_cast<CallInst>(LU)) {
-                CallSite CS(CI);
+              if (isa<CallInst>(LU) || isa<InvokeInst>(LU)) {
+                CallSite CS(LU);
                 Value *calledFunction = CS.getCalledFunction();
                 if (!calledFunction)
                   calledFunction = CS.getCalledValue()->stripPointerCasts();
@@ -207,15 +209,17 @@ struct ConstantEncryption : public ModulePass {
       if (!shouldEncryptConstant(&I))
         continue;
       CallInst *CI = dyn_cast<CallInst>(&I);
+      InvokeInst *II = dyn_cast<InvokeInst>(&I);
       for (unsigned int i = 0; i < I.getNumOperands(); i++) {
         if (CI && CI->isBundleOperand(i))
+          continue;
+        if (II && II->isBundleOperand(i))
           continue;
         if (ConstantInt *CI = dyn_cast<ConstantInt>(I.getOperand(i))) {
           GlobalVariable *GV = new GlobalVariable(
               *F.getParent(), CI->getType(), false,
               GlobalValue::LinkageTypes::PrivateLinkage,
-              ConstantInt::get(CI->getType(), CI->getValue()),
-              "");
+              ConstantInt::get(CI->getType(), CI->getValue()), "");
           appendToCompilerUsed(*F.getParent(), GV);
           I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
         }
@@ -241,8 +245,7 @@ struct ConstantEncryption : public ModulePass {
           continue;
         GlobalVariable *GV = new GlobalVariable(
             M, BO->getType(), false, GlobalValue::LinkageTypes::PrivateLinkage,
-            ConstantInt::get(BO->getType(), dummy),
-            "");
+            ConstantInt::get(BO->getType(), dummy), "");
         StoreInst *SI =
             new StoreInst(BO, GV, false, DL.getABITypeAlign(BO->getType()));
         SI->insertAfter(BO);

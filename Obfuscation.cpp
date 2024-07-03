@@ -176,9 +176,10 @@ struct Obfuscation : public ModulePass {
     MP->runOnModule(M);
     delete MP;
     // Cleanup Flags
-    SmallVector<Function *, 4> toDelete;
+    SmallVector<Function *, 8> toDelete;
     for (Function &F : M)
-      if (F.isDeclaration() && F.hasName() && F.getName().contains("hikari_")) {
+      if (F.isDeclaration() && F.hasName() &&
+          F.getName().starts_with("hikari_")) {
         for (User *U : F.users())
           if (Instruction *Inst = dyn_cast<Instruction>(U))
             Inst->eraseFromParent();
