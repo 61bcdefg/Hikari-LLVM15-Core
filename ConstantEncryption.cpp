@@ -75,6 +75,11 @@ struct ConstantEncryption : public ModulePass {
     if (AllocaInst *AI = dyn_cast<AllocaInst>(I))
       if (AI->isSwiftError())
         return false;
+    if (CallInst *CI = dyn_cast<CallInst>(I)) {
+      if (CI->getCalledFunction() && CI->getCalledFunction()->getName().starts_with("hikari_")) {
+        return false;
+      }
+    }
     if (dispatchonce)
       if (AllocaInst *AI = dyn_cast<AllocaInst>(I)) {
         if (AI->getAllocatedType()->isIntegerTy())
@@ -210,7 +215,7 @@ struct ConstantEncryption : public ModulePass {
               *F.getParent(), CI->getType(), false,
               GlobalValue::LinkageTypes::PrivateLinkage,
               ConstantInt::get(CI->getType(), CI->getValue()),
-              "ConstantEncryptionConstToGlobal");
+              "");
           appendToCompilerUsed(*F.getParent(), GV);
           I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
         }
@@ -237,7 +242,7 @@ struct ConstantEncryption : public ModulePass {
         GlobalVariable *GV = new GlobalVariable(
             M, BO->getType(), false, GlobalValue::LinkageTypes::PrivateLinkage,
             ConstantInt::get(BO->getType(), dummy),
-            "ConstantEncryptionBOStore");
+            "");
         StoreInst *SI =
             new StoreInst(BO, GV, false, DL.getABITypeAlign(BO->getType()));
         SI->insertAfter(BO);
