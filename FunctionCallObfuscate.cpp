@@ -121,6 +121,7 @@ struct FunctionCallObfuscate : public FunctionPass {
 
   void HandleObjC(Function *F) {
     SmallPtrSet<GlobalVariable *, 8> objcclassgv, objcselgv, selnamegv;
+    bool compilerUsedChanged = false;
     for (Instruction &I : instructions(F))
       for (Value *Op : I.operands())
         if (GlobalVariable *G =
@@ -192,6 +193,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     for (GlobalVariable *GV : objcclassgv) {
       GV->removeDeadConstantUsers();
       if (OnlyUsedByCompilerUsed(GV)) {
+        compilerUsedChanged = true;
         GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
       }
       if (GV->getNumUses() == 0) {
@@ -203,6 +205,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     for (GlobalVariable *GV : objcselgv) {
       GV->removeDeadConstantUsers();
       if (OnlyUsedByCompilerUsed(GV)) {
+        compilerUsedChanged = true;
         GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
       }
       if (GV->getNumUses() == 0) {
@@ -213,11 +216,42 @@ struct FunctionCallObfuscate : public FunctionPass {
     for (GlobalVariable *GV : selnamegv) {
       GV->removeDeadConstantUsers();
       if (OnlyUsedByCompilerUsed(GV)) {
+        compilerUsedChanged = true;
         GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
       }
       if (GV->getNumUses() == 0) {
         GV->dropAllReferences();
         GV->eraseFromParent();
+      }
+    }
+    // Fixup llvm.compiler.used, so Verifier won't emit errors
+    if (compilerUsedChanged) {
+      GlobalVariable *CompilerUsedGV =
+          F->getParent()->getGlobalVariable("llvm.compiler.used");
+      if (!CompilerUsedGV)
+        return;
+      ConstantArray *CompilerUsed =
+          dyn_cast<ConstantArray>(CompilerUsedGV->getInitializer());
+      if (!CompilerUsed) {
+        CompilerUsedGV->dropAllReferences();
+        CompilerUsedGV->eraseFromParent();
+        return;
+      }
+      std::vector<Constant *> elements = {};
+      for (unsigned int i = 0; i < CompilerUsed->getNumOperands(); i++) {
+        Constant *Op =
+            CompilerUsed->getAggregateElement(i);
+        if (!Op->isNullValue())
+          elements.emplace_back(Op);
+      }
+      if (elements.size()) {
+        ConstantArray *NewCA = cast<ConstantArray>(
+            ConstantArray::get(CompilerUsed->getType(), elements));
+        CompilerUsedGV->setInitializer(NewCA);
+      }
+      else {
+        CompilerUsedGV->dropAllReferences();
+        CompilerUsedGV->eraseFromParent();
       }
     }
   }
