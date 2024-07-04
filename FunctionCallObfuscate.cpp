@@ -74,7 +74,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     }
     this->triple = Triple(M.getTargetTriple());
     if (triple.getVendor() == Triple::VendorType::Apple) {
-      Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
+      Type *Int8PtrTy = Type::getInt8Ty(M.getContext())->getPointerTo();
       // Generic ObjC Runtime Declarations
       FunctionType *IMPType =
           FunctionType::get(Int8PtrTy, {Int8PtrTy, Int8PtrTy}, true);
@@ -121,6 +121,7 @@ struct FunctionCallObfuscate : public FunctionPass {
 
   void HandleObjC(Function *F) {
     SmallPtrSet<GlobalVariable *, 8> objcclassgv, objcselgv, selnamegv;
+    bool compilerUsedChanged = false;
     for (Instruction &I : instructions(F))
       for (Value *Op : I.operands())
         if (GlobalVariable *G =
@@ -128,9 +129,15 @@ struct FunctionCallObfuscate : public FunctionPass {
           if (!G->hasName() || !G->hasInitializer() ||
               !G->getSection().contains("objc"))
             continue;
+#if LLVM_VERSION_MAJOR >= 18
+          if (G->getName().starts_with("OBJC_CLASSLIST_REFERENCES"))
+            objcclassgv.insert(G);
+          else if (G->getName().starts_with("OBJC_SELECTOR_REFERENCES"))
+#else
           if (G->getName().startswith("OBJC_CLASSLIST_REFERENCES"))
             objcclassgv.insert(G);
           else if (G->getName().startswith("OBJC_SELECTOR_REFERENCES"))
+#endif
             objcselgv.insert(G);
         }
     Module *M = F->getParent();
@@ -186,6 +193,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     for (GlobalVariable *GV : objcclassgv) {
       GV->removeDeadConstantUsers();
       if (OnlyUsedByCompilerUsed(GV)) {
+        compilerUsedChanged = true;
         GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
       }
       if (GV->getNumUses() == 0) {
@@ -197,6 +205,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     for (GlobalVariable *GV : objcselgv) {
       GV->removeDeadConstantUsers();
       if (OnlyUsedByCompilerUsed(GV)) {
+        compilerUsedChanged = true;
         GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
       }
       if (GV->getNumUses() == 0) {
@@ -207,11 +216,42 @@ struct FunctionCallObfuscate : public FunctionPass {
     for (GlobalVariable *GV : selnamegv) {
       GV->removeDeadConstantUsers();
       if (OnlyUsedByCompilerUsed(GV)) {
+        compilerUsedChanged = true;
         GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
       }
       if (GV->getNumUses() == 0) {
         GV->dropAllReferences();
         GV->eraseFromParent();
+      }
+    }
+    // Fixup llvm.compiler.used, so Verifier won't emit errors
+    if (compilerUsedChanged) {
+      GlobalVariable *CompilerUsedGV =
+          F->getParent()->getGlobalVariable("llvm.compiler.used");
+      if (!CompilerUsedGV)
+        return;
+      ConstantArray *CompilerUsed =
+          dyn_cast<ConstantArray>(CompilerUsedGV->getInitializer());
+      if (!CompilerUsed) {
+        CompilerUsedGV->dropAllReferences();
+        CompilerUsedGV->eraseFromParent();
+        return;
+      }
+      std::vector<Constant *> elements = {};
+      for (unsigned int i = 0; i < CompilerUsed->getNumOperands(); i++) {
+        Constant *Op =
+            CompilerUsed->getAggregateElement(i);
+        if (!Op->isNullValue())
+          elements.emplace_back(Op);
+      }
+      if (elements.size()) {
+        ConstantArray *NewCA = cast<ConstantArray>(
+            ConstantArray::get(CompilerUsed->getType(), elements));
+        CompilerUsedGV->setInitializer(NewCA);
+      }
+      else {
+        CompilerUsedGV->dropAllReferences();
+        CompilerUsedGV->eraseFromParent();
       }
     }
   }
@@ -230,7 +270,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     FixFunctionConstantExpr(&F);
     HandleObjC(&F);
     Type *Int32Ty = Type::getInt32Ty(M->getContext());
-    Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
+    Type *Int8PtrTy = Type::getInt8Ty(M->getContext())->getPointerTo();
     // ObjC Runtime Declarations
     FunctionType *dlopen_type = FunctionType::get(
         Int8PtrTy, {Int8PtrTy, Int32Ty},
@@ -262,8 +302,11 @@ struct FunctionCallObfuscate : public FunctionPass {
           // Use our own implementation
           if (!calledFunction)
             continue;
-
+#if LLVM_VERSION_MAJOR >= 18
+          if (calledFunction->getName().starts_with("hikari_"))
+#else
           if (calledFunction->getName().startswith("hikari_"))
+#endif
             continue;
 
           // It's only safe to restrict our modification to external symbols
