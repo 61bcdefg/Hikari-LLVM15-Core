@@ -364,8 +364,13 @@ struct BogusControlFlow : public FunctionPass {
     Value *RHS = ConstantInt::get(Type::getInt32Ty(F.getContext()), 1);
 
     // The always true condition. End of the first block
+#if LLVM_VERSION_MAJOR >= 19
+    ICmpInst *condition = new ICmpInst(basicBlock->end(), ICmpInst::ICMP_EQ,
+                                       LHS, RHS, "BCFPlaceHolderPred");
+#else
     ICmpInst *condition = new ICmpInst(*basicBlock, ICmpInst::ICMP_EQ, LHS, RHS,
                                        "BCFPlaceHolderPred");
+#endif
     needtoedit.emplace_back(condition);
 
     // Jump to the original basic block if the condition is true or
@@ -391,8 +396,13 @@ struct BogusControlFlow : public FunctionPass {
     // of the altered block.. So we erase the terminator created when splitting.
     originalBB->getTerminator()->eraseFromParent();
     // We add at the end a new always true condition
+#if LLVM_VERSION_MAJOR >= 19
+    ICmpInst *condition2 = new ICmpInst(originalBB->end(), CmpInst::ICMP_EQ,
+                                        LHS, RHS, "BCFPlaceHolderPred");
+#else
     ICmpInst *condition2 = new ICmpInst(*originalBB, CmpInst::ICMP_EQ, LHS, RHS,
                                         "BCFPlaceHolderPred");
+#endif
     needtoedit.emplace_back(condition2);
     // Do random behavior to avoid pattern recognition.
     // This is achieved by jumping to a random BB
@@ -620,7 +630,11 @@ struct BogusControlFlow : public FunctionPass {
       for (Instruction &I : *alteredBB) {
         if (CallInst *CI = dyn_cast<CallInst>(&I)) {
           if (CI->getCalledFunction() != nullptr &&
+#if LLVM_VERSION_MAJOR >= 18
+              CI->getCalledFunction()->getName().starts_with("llvm.dbg"))
+#else
               CI->getCalledFunction()->getName().startswith("llvm.dbg"))
+#endif
             toRemove.emplace_back(CI);
         }
       }

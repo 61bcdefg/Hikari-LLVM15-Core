@@ -43,7 +43,11 @@ struct StringEncryption : public ModulePass {
   StringRef getPassName() const override { return "StringEncryption"; }
 
   bool handleableGV(GlobalVariable *GV) {
+#if LLVM_VERSION_MAJOR >= 18
+    if (GV->hasInitializer() && !GV->getSection().starts_with("llvm.") &&
+#else
     if (GV->hasInitializer() && !GV->getSection().startswith("llvm.") &&
+#endif
         !(GV->getSection().contains("__objc") &&
           !GV->getSection().contains("array")) &&
         !GV->getName().contains("OBJC") &&
@@ -534,7 +538,8 @@ struct StringEncryption : public ModulePass {
         ObjcGV->getInitializer()->setOperand(
             0,
             ConstantExpr::getBitCast(
-                NewPtrauthGV, Type::getInt32PtrTy(NewPtrauthGV->getContext())));
+                NewPtrauthGV,
+                Type::getInt32Ty(NewPtrauthGV->getContext())->getPointerTo()));
       }
     }
     return ObjcGV;

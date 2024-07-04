@@ -106,8 +106,9 @@ void Flattening::flatten(Function *f) {
   // Create switch variable and set as it
   switchVar = new AllocaInst(Type::getInt32Ty(f->getContext()),
                              DL.getAllocaAddrSpace(), "switchVar", oldTerm);
-  switchVarAddr = new AllocaInst(Type::getInt32PtrTy(f->getContext()),
-                                 DL.getAllocaAddrSpace(), "", oldTerm);
+  switchVarAddr =
+      new AllocaInst(Type::getInt32Ty(f->getContext())->getPointerTo(),
+                     DL.getAllocaAddrSpace(), "", oldTerm);
 
   // Remove jump
   oldTerm->eraseFromParent();

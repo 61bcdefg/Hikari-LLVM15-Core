@@ -74,7 +74,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     }
     this->triple = Triple(M.getTargetTriple());
     if (triple.getVendor() == Triple::VendorType::Apple) {
-      Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
+      Type *Int8PtrTy = Type::getInt8Ty(M.getContext())->getPointerTo();
       // Generic ObjC Runtime Declarations
       FunctionType *IMPType =
           FunctionType::get(Int8PtrTy, {Int8PtrTy, Int8PtrTy}, true);
@@ -128,9 +128,15 @@ struct FunctionCallObfuscate : public FunctionPass {
           if (!G->hasName() || !G->hasInitializer() ||
               !G->getSection().contains("objc"))
             continue;
+#if LLVM_VERSION_MAJOR >= 18
+          if (G->getName().starts_with("OBJC_CLASSLIST_REFERENCES"))
+            objcclassgv.insert(G);
+          else if (G->getName().starts_with("OBJC_SELECTOR_REFERENCES"))
+#else
           if (G->getName().startswith("OBJC_CLASSLIST_REFERENCES"))
             objcclassgv.insert(G);
           else if (G->getName().startswith("OBJC_SELECTOR_REFERENCES"))
+#endif
             objcselgv.insert(G);
         }
     Module *M = F->getParent();
@@ -230,7 +236,7 @@ struct FunctionCallObfuscate : public FunctionPass {
     FixFunctionConstantExpr(&F);
     HandleObjC(&F);
     Type *Int32Ty = Type::getInt32Ty(M->getContext());
-    Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
+    Type *Int8PtrTy = Type::getInt8Ty(M->getContext())->getPointerTo();
     // ObjC Runtime Declarations
     FunctionType *dlopen_type = FunctionType::get(
         Int8PtrTy, {Int8PtrTy, Int32Ty},
@@ -262,8 +268,11 @@ struct FunctionCallObfuscate : public FunctionPass {
           // Use our own implementation
           if (!calledFunction)
             continue;
-
+#if LLVM_VERSION_MAJOR >= 18
+          if (calledFunction->getName().starts_with("hikari_"))
+#else
           if (calledFunction->getName().startswith("hikari_"))
+#endif
             continue;
 
           // It's only safe to restrict our modification to external symbols

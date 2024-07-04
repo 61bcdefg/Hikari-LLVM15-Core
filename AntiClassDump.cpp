@@ -57,7 +57,7 @@ struct AntiClassDump : public ModulePass {
           << " is Not Supported For LLVM AntiClassDump\nProbably GNU Step?\n";
       return false;
     }
-    Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
+    Type *Int8PtrTy = Type::getInt8Ty(M.getContext())->getPointerTo();
     // Generic ObjC Runtime Declarations
     FunctionType *IMPType =
         FunctionType::get(Int8PtrTy, {Int8PtrTy, Int8PtrTy}, true);
@@ -184,8 +184,13 @@ struct AntiClassDump : public ModulePass {
       if ((!opaquepointers &&
            type == PointerType::getUnqual(objc_method_list_t_type)) ||
           (opaquepointers &&
+#if LLVM_VERSION_MAJOR >= 18
+           (tmp->getName().starts_with("_OBJC_$_INSTANCE_METHODS") ||
+            tmp->getName().starts_with("_OBJC_$_CLASS_METHODS")))) {
+#else
            (tmp->getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
             tmp->getName().startswith("_OBJC_$_CLASS_METHODS")))) {
+#endif
         // Insert Methods
         GlobalVariable *methodListGV =
             readPtrauth(cast<GlobalVariable>(tmp->stripPointerCasts()));
@@ -448,8 +453,13 @@ struct AntiClassDump : public ModulePass {
       if ((!opaquepointers &&
            type == PointerType::getUnqual(objc_method_list_t_type)) ||
           (opaquepointers &&
+#if LLVM_VERSION_MAJOR >= 18
+           (tmp->getName().starts_with("_OBJC_$_INSTANCE_METHODS") ||
+            tmp->getName().starts_with("_OBJC_$_CLASS_METHODS")))) {
+#else
            (tmp->getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
             tmp->getName().startswith("_OBJC_$_CLASS_METHODS")))) {
+#endif
         // Insert Methods
         GlobalVariable *methodListGV =
             readPtrauth(cast<GlobalVariable>(tmp->stripPointerCasts()));

@@ -76,7 +76,11 @@ struct FunctionWrapper : public ModulePass {
       return nullptr;
     SmallVector<unsigned int, 8> byvalArgNums;
     if (Function *tmp = dyn_cast<Function>(calledFunction)) {
+#if LLVM_VERSION_MAJOR >= 18
+      if (tmp->getName().starts_with("clang.")) {
+#else
       if (tmp->getName().startswith("clang.")) {
+#endif
         // Clang Intrinsic
         return nullptr;
       }

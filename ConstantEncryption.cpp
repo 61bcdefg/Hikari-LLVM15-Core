@@ -86,7 +86,11 @@ struct ConstantEncryption : public ModulePass {
     if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
       CallSite CS(I);
       if (CS.getCalledFunction() &&
+#if LLVM_VERSION_MAJOR >= 18
           CS.getCalledFunction()->getName().starts_with("hikari_")) {
+#else
+          CS.getCalledFunction()->getName().startswith("hikari_")) {
+#endif
         return false;
       }
     }
