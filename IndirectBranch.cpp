@@ -37,6 +37,7 @@ struct IndirectBranch : public FunctionPass {
   bool initialized;
   std::unordered_map<BasicBlock *, unsigned long long> indexmap;
   std::unordered_map<Function *, ConstantInt *> encmap;
+  std::set<Function *> to_obf_funcs;
   IndirectBranch() : FunctionPass(ID) {
     this->flag = true;
     this->initialized = false;
@@ -58,6 +59,8 @@ struct IndirectBranch : public FunctionPass {
     for (Function &F : M) {
       if (!toObfuscate(flag, &F, "indibr"))
         continue;
+      else
+        to_obf_funcs.insert(&F);
       if (!toObfuscateBoolOption(&F, "indibran_use_stack", &UseStackTemp))
         UseStackTemp = UseStack;
 
@@ -86,23 +89,26 @@ struct IndirectBranch : public FunctionPass {
                   : BlockAddress::get(&BB));
         }
     }
-    ArrayType *AT = ArrayType::get(
-        Type::getInt8Ty(M.getContext())->getPointerTo(), BBs.size());
-    Constant *BlockAddressArray =
-        ConstantArray::get(AT, ArrayRef<Constant *>(BBs));
-    GlobalVariable *Table = new GlobalVariable(
-        M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
-        BlockAddressArray, "IndirectBranchingGlobalTable");
-    appendToCompilerUsed(M, {Table});
+    if (to_obf_funcs.size()) {
+      ArrayType *AT = ArrayType::get(
+          Type::getInt8Ty(M.getContext())->getPointerTo(), BBs.size());
+      Constant *BlockAddressArray =
+          ConstantArray::get(AT, ArrayRef<Constant *>(BBs));
+      GlobalVariable *Table = new GlobalVariable(
+          M, AT, false, GlobalValue::LinkageTypes::PrivateLinkage,
+          BlockAddressArray, "IndirectBranchingGlobalTable");
+      appendToCompilerUsed(M, {Table});
+    }
     this->initialized = true;
     return true;
   }
   bool runOnFunction(Function &Func) override {
-    if (!toObfuscate(flag, &Func, "indibr"))
-      return false;
     Module *M = Func.getParent();
     if (!this->initialized)
       initialize(*M);
+    if (std::find(to_obf_funcs.begin(), to_obf_funcs.end(), &Func) ==
+        to_obf_funcs.end())
+      return false;
     errs() << "Running IndirectBranch On " << Func.getName() << "\n";
     SmallVector<BranchInst *, 32> BIs;
     for (Instruction &Inst : instructions(Func))
