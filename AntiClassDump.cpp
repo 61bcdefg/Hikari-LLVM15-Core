@@ -126,6 +126,7 @@ struct AntiClassDump : public ModulePass {
       */
       GlobalVariable *SuperClassGV =
           dyn_cast_or_null<GlobalVariable>(clsCS->getOperand(1));
+      SuperClassGV = readPtrauth(SuperClassGV);
       std::string supclsName = "";
       std::string clsName = CEGV->getName().str();
       clsName.replace(clsName.find("OBJC_CLASS_$_"), strlen("OBJC_CLASS_$_"),
