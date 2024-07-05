@@ -13,7 +13,11 @@
 */
 
 #include "llvm/Transforms/Obfuscation/AntiClassDump.h"
+#if LLVM_VERSION_MAJOR >= 17
+#include "llvm/TargetParser/Triple.h"
+#else
 #include "llvm/ADT/Triple.h"
+#endif
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
@@ -53,7 +57,7 @@ struct AntiClassDump : public ModulePass {
           << " is Not Supported For LLVM AntiClassDump\nProbably GNU Step?\n";
       return false;
     }
-    Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
+    Type *Int8PtrTy = Type::getInt8Ty(M.getContext())->getPointerTo();
     // Generic ObjC Runtime Declarations
     FunctionType *IMPType =
         FunctionType::get(Int8PtrTy, {Int8PtrTy, Int8PtrTy}, true);
@@ -77,7 +81,11 @@ struct AntiClassDump : public ModulePass {
         FunctionType::get(Int8PtrTy, {Int8PtrTy}, false);
     M.getOrInsertFunction("objc_getMetaClass", objc_getMetaClass_Type);
     appleptrauth = hasApplePtrauth(&M);
+#if LLVM_VERSION_MAJOR >= 17
+    opaquepointers = true;
+#else
     opaquepointers = !M.getContext().supportsTypedPointers();
+#endif
     return true;
   }
   bool runOnModule(Module &M) override {
@@ -85,7 +93,6 @@ struct AntiClassDump : public ModulePass {
     GlobalVariable *OLCGV = M.getGlobalVariable("OBJC_LABEL_CLASS_$", true);
     if (!OLCGV) {
       errs() << "No ObjC Class Found in :" << M.getSourceFileName() << "\n";
-      // No ObjC class found.
       return false;
     }
     assert(OLCGV->hasInitializer() &&
@@ -177,8 +184,13 @@ struct AntiClassDump : public ModulePass {
       if ((!opaquepointers &&
            type == PointerType::getUnqual(objc_method_list_t_type)) ||
           (opaquepointers &&
+#if LLVM_VERSION_MAJOR >= 18
+           (tmp->getName().starts_with("_OBJC_$_INSTANCE_METHODS") ||
+            tmp->getName().starts_with("_OBJC_$_CLASS_METHODS")))) {
+#else
            (tmp->getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
             tmp->getName().startswith("_OBJC_$_CLASS_METHODS")))) {
+#endif
         // Insert Methods
         GlobalVariable *methodListGV =
             readPtrauth(cast<GlobalVariable>(tmp->stripPointerCasts()));
@@ -283,7 +295,7 @@ struct AntiClassDump : public ModulePass {
       errs() << "Handling Instance Methods For Class:" << ClassName << "\n";
       HandleMethods(metaclassCS, IRB, M, Class, false);
 
-      errs() << "Updating Class Method Map For Class:" << ClassName << "\n";
+      errs() << "Updating Instance Method Map For Class:" << ClassName << "\n";
       Type *objc_method_type =
           StructType::getTypeByName(M->getContext(), "struct._objc_method");
       ArrayType *AT = ArrayType::get(objc_method_type, 0);
@@ -315,8 +327,10 @@ struct AntiClassDump : public ModulePass {
       appendToCompilerUsed(*M, {newMethodStructGV});
       newMethodStructGV->copyAttributesFrom(methodListGV);
       Constant *bitcastExpr = ConstantExpr::getBitCast(
-          newMethodStructGV, PointerType::getUnqual(StructType::getTypeByName(
-                                 M->getContext(), "struct.__method_list_t")));
+          newMethodStructGV,
+          opaquepointers ? newType->getPointerTo()
+                         : PointerType::getUnqual(StructType::getTypeByName(
+                               M->getContext(), "struct.__method_list_t")));
       metaclassCS->handleOperandChange(metaclassCS->getAggregateElement(5),
                                        opaquepointers ? newMethodStructGV
                                                       : bitcastExpr);
@@ -408,8 +422,10 @@ struct AntiClassDump : public ModulePass {
       newMethodStructGV->copyAttributesFrom(methodListGV);
     }
     Constant *bitcastExpr = ConstantExpr::getBitCast(
-        newMethodStructGV, PointerType::getUnqual(StructType::getTypeByName(
-                               M->getContext(), "struct.__method_list_t")));
+        newMethodStructGV,
+        opaquepointers ? newType->getPointerTo()
+                       : PointerType::getUnqual(StructType::getTypeByName(
+                             M->getContext(), "struct.__method_list_t")));
     opaquepointers ? classCS->setOperand(5, bitcastExpr)
                    : classCS->handleOperandChange(
                          classCS->getAggregateElement(5), bitcastExpr);
@@ -441,8 +457,13 @@ struct AntiClassDump : public ModulePass {
       if ((!opaquepointers &&
            type == PointerType::getUnqual(objc_method_list_t_type)) ||
           (opaquepointers &&
+#if LLVM_VERSION_MAJOR >= 18
+           (tmp->getName().starts_with("_OBJC_$_INSTANCE_METHODS") ||
+            tmp->getName().starts_with("_OBJC_$_CLASS_METHODS")))) {
+#else
            (tmp->getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
             tmp->getName().startswith("_OBJC_$_CLASS_METHODS")))) {
+#endif
         // Insert Methods
         GlobalVariable *methodListGV =
             readPtrauth(cast<GlobalVariable>(tmp->stripPointerCasts()));
