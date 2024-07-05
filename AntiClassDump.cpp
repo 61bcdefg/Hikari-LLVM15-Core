@@ -90,82 +90,95 @@ struct AntiClassDump : public ModulePass {
   }
   bool runOnModule(Module &M) override {
     errs() << "Running AntiClassDump On " << M.getSourceFileName() << "\n";
-    GlobalVariable *OLCGV = M.getGlobalVariable("OBJC_LABEL_CLASS_$", true);
-    if (!OLCGV) {
+    SmallVector<GlobalVariable *, 32> OLCGVs;
+    for (GlobalVariable &GV : M.globals()) {
+#if LLVM_VERSION_MAJOR >= 18
+      if (GV.getName().starts_with("OBJC_LABEL_CLASS_$")) {
+#else
+      if (GV.getName().startswith("OBJC_LABEL_CLASS_$")) {
+#endif
+        OLCGVs.emplace_back(&GV);
+      }
+    }
+    if (!OLCGVs.size()) {
       errs() << "No ObjC Class Found in :" << M.getSourceFileName() << "\n";
       return false;
     }
-    assert(OLCGV->hasInitializer() &&
-           "OBJC_LABEL_CLASS_$ Doesn't Have Initializer.");
-    ConstantArray *OBJC_LABEL_CLASS_CDS =
-        dyn_cast<ConstantArray>(OLCGV->getInitializer());
-    assert(OBJC_LABEL_CLASS_CDS &&
-           "OBJC_LABEL_CLASS_$ Not ConstantArray.Is the target using "
-           "unsupported legacy runtime?");
-    SmallVector<std::string, 1> readyclses; // This is for storing classes that
-                                            // can be used in handleClass()
-    std::deque<std::string> tmpclses; // This is temporary storage for classes
-    std::unordered_map<std::string /*class*/, std::string /*super class*/>
-        dependency;
-    std::unordered_map<std::string /*Class*/, GlobalVariable *>
-        GVMapping; // Map ClassName to corresponding GV
-    for (unsigned int i = 0; i < OBJC_LABEL_CLASS_CDS->getNumOperands(); i++) {
-      ConstantExpr *clsEXPR =
-          opaquepointers
-              ? nullptr
-              : dyn_cast<ConstantExpr>(OBJC_LABEL_CLASS_CDS->getOperand(i));
-      GlobalVariable *CEGV = dyn_cast<GlobalVariable>(
-          opaquepointers ? OBJC_LABEL_CLASS_CDS->getOperand(i)
-                         : clsEXPR->getOperand(0));
-      ConstantStruct *clsCS = dyn_cast<ConstantStruct>(CEGV->getInitializer());
-      /*
-        First Operand MetaClass.
-        Second Operand SuperClass
-        Fifth Operand ClassRO
-      */
-      GlobalVariable *SuperClassGV =
-          dyn_cast_or_null<GlobalVariable>(clsCS->getOperand(1));
-      SuperClassGV = readPtrauth(SuperClassGV);
-      std::string supclsName = "";
-      std::string clsName = CEGV->getName().str();
-      clsName.replace(clsName.find("OBJC_CLASS_$_"), strlen("OBJC_CLASS_$_"),
-                      "");
+    for (GlobalVariable *OLCGV : OLCGVs) {
+      ConstantArray *OBJC_LABEL_CLASS_CDS =
+          dyn_cast<ConstantArray>(OLCGV->getInitializer());
+      assert(OBJC_LABEL_CLASS_CDS &&
+             "OBJC_LABEL_CLASS_$ Not ConstantArray.Is the target using "
+             "unsupported legacy runtime?");
+      SmallVector<std::string, 4>
+          readyclses;                   // This is for storing classes that
+                                        // can be used in handleClass()
+      std::deque<std::string> tmpclses; // This is temporary storage for classes
+      std::unordered_map<std::string /*class*/, std::string /*super class*/>
+          dependency;
+      std::unordered_map<std::string /*Class*/, GlobalVariable *>
+          GVMapping; // Map ClassName to corresponding GV
+      for (unsigned int i = 0; i < OBJC_LABEL_CLASS_CDS->getNumOperands();
+           i++) {
+        ConstantExpr *clsEXPR =
+            opaquepointers
+                ? nullptr
+                : dyn_cast<ConstantExpr>(OBJC_LABEL_CLASS_CDS->getOperand(i));
+        GlobalVariable *CEGV = dyn_cast<GlobalVariable>(
+            opaquepointers ? OBJC_LABEL_CLASS_CDS->getOperand(i)
+                           : clsEXPR->getOperand(0));
+        ConstantStruct *clsCS =
+            dyn_cast<ConstantStruct>(CEGV->getInitializer());
+        /*
+          First Operand MetaClass.
+          Second Operand SuperClass
+          Fifth Operand ClassRO
+        */
+        GlobalVariable *SuperClassGV =
+            dyn_cast_or_null<GlobalVariable>(clsCS->getOperand(1));
+        SuperClassGV = readPtrauth(SuperClassGV);
+        std::string supclsName = "";
+        std::string clsName = CEGV->getName().str();
+        clsName.replace(clsName.find("OBJC_CLASS_$_"), strlen("OBJC_CLASS_$_"),
+                        "");
 
-      if (SuperClassGV) { // We need to handle Classed that doesn't have a base
-        supclsName = SuperClassGV->getName().str();
-        supclsName.replace(supclsName.find("OBJC_CLASS_$_"),
-                           strlen("OBJC_CLASS_$_"), "");
-      }
-      dependency[clsName] = supclsName;
-      GVMapping[clsName] = CEGV;
-      if (supclsName == "" /*NULL Super Class*/ ||
-          (SuperClassGV &&
-           !SuperClassGV->hasInitializer() /*External Super Class*/)) {
-        readyclses.emplace_back(clsName);
-      } else {
-        tmpclses.emplace_back(clsName);
-      }
-    }
-    // Sort Initialize Sequence Based On Dependency
-    while (tmpclses.size()) {
-      std::string clstmp = tmpclses.front();
-      tmpclses.pop_front();
-      std::string SuperClassName = dependency[clstmp];
-      if (SuperClassName != "" &&
-          std::find(readyclses.begin(), readyclses.end(), SuperClassName) ==
-              readyclses.end()) {
-        // SuperClass is unintialized non-null class.Push back and waiting until
-        // baseclass is allocated
-        tmpclses.emplace_back(clstmp);
-      } else {
-        // BaseClass Ready. Push into ReadyClasses
-        readyclses.emplace_back(clstmp);
-      }
-    }
+        if (SuperClassGV) { // We need to handle Classed that doesn't have a
+                            // base
+          supclsName = SuperClassGV->getName().str();
+          supclsName.replace(supclsName.find("OBJC_CLASS_$_"),
+                             strlen("OBJC_CLASS_$_"), "");
+        }
+        dependency[clsName] = supclsName;
+        GVMapping[clsName] = CEGV;
+        if (supclsName == "" /*NULL Super Class*/ ||
+            (SuperClassGV &&
+             !SuperClassGV->hasInitializer() /*External Super Class*/)) {
+          readyclses.emplace_back(clsName);
+        } else {
+          tmpclses.emplace_back(clsName);
+        }
+        // Sort Initialize Sequence Based On Dependency
+        while (tmpclses.size()) {
+          std::string clstmp = tmpclses.front();
+          tmpclses.pop_front();
+          std::string SuperClassName = dependency[clstmp];
+          if (SuperClassName != "" &&
+              std::find(readyclses.begin(), readyclses.end(), SuperClassName) ==
+                  readyclses.end()) {
+            // SuperClass is unintialized non-null class.Push back and waiting
+            // until baseclass is allocated
+            tmpclses.emplace_back(clstmp);
+          } else {
+            // BaseClass Ready. Push into ReadyClasses
+            readyclses.emplace_back(clstmp);
+          }
+        }
 
-    // Now run handleClass for each class
-    for (std::string className : readyclses) {
-      handleClass(GVMapping[className], &M);
+        // Now run handleClass for each class
+        for (std::string className : readyclses) {
+          handleClass(GVMapping[className], &M);
+        }
+      }
     }
     return true;
   } // runOnModule
