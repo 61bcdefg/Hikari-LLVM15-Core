@@ -93,7 +93,6 @@ struct AntiClassDump : public ModulePass {
     GlobalVariable *OLCGV = M.getGlobalVariable("OBJC_LABEL_CLASS_$", true);
     if (!OLCGV) {
       errs() << "No ObjC Class Found in :" << M.getSourceFileName() << "\n";
-      // No ObjC class found.
       return false;
     }
     assert(OLCGV->hasInitializer() &&
@@ -296,7 +295,7 @@ struct AntiClassDump : public ModulePass {
       errs() << "Handling Instance Methods For Class:" << ClassName << "\n";
       HandleMethods(metaclassCS, IRB, M, Class, false);
 
-      errs() << "Updating Class Method Map For Class:" << ClassName << "\n";
+      errs() << "Updating Instance Method Map For Class:" << ClassName << "\n";
       Type *objc_method_type =
           StructType::getTypeByName(M->getContext(), "struct._objc_method");
       ArrayType *AT = ArrayType::get(objc_method_type, 0);
@@ -328,8 +327,10 @@ struct AntiClassDump : public ModulePass {
       appendToCompilerUsed(*M, {newMethodStructGV});
       newMethodStructGV->copyAttributesFrom(methodListGV);
       Constant *bitcastExpr = ConstantExpr::getBitCast(
-          newMethodStructGV, PointerType::getUnqual(StructType::getTypeByName(
-                                 M->getContext(), "struct.__method_list_t")));
+          newMethodStructGV,
+          opaquepointers ? newType->getPointerTo()
+                         : PointerType::getUnqual(StructType::getTypeByName(
+                               M->getContext(), "struct.__method_list_t")));
       metaclassCS->handleOperandChange(metaclassCS->getAggregateElement(5),
                                        opaquepointers ? newMethodStructGV
                                                       : bitcastExpr);
@@ -421,8 +422,10 @@ struct AntiClassDump : public ModulePass {
       newMethodStructGV->copyAttributesFrom(methodListGV);
     }
     Constant *bitcastExpr = ConstantExpr::getBitCast(
-        newMethodStructGV, PointerType::getUnqual(StructType::getTypeByName(
-                               M->getContext(), "struct.__method_list_t")));
+        newMethodStructGV,
+        opaquepointers ? newType->getPointerTo()
+                       : PointerType::getUnqual(StructType::getTypeByName(
+                             M->getContext(), "struct.__method_list_t")));
     opaquepointers ? classCS->setOperand(5, bitcastExpr)
                    : classCS->handleOperandChange(
                          classCS->getAggregateElement(5), bitcastExpr);
