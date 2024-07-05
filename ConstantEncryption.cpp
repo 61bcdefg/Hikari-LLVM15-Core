@@ -199,6 +199,16 @@ struct ConstantEncryption : public ModulePass {
     return false;
   }
 
+  bool isAtomicLoaded(GlobalVariable *GV) {
+    for (User *U : GV->users()) {
+      if (LoadInst *LI = dyn_cast<LoadInst>(U)) {
+        if (LI->isAtomic())
+          return true;
+      }
+    }
+    return false;
+  }
+
   void EncryptConstants(Function &F) {
     for (Instruction &I : instructions(F)) {
       if (!shouldEncryptConstant(&I))
@@ -238,7 +248,7 @@ struct ConstantEncryption : public ModulePass {
           GlobalVariable *GV = new GlobalVariable(
               *F.getParent(), CI->getType(), false,
               GlobalValue::LinkageTypes::PrivateLinkage,
-              ConstantInt::get(CI->getType(), CI->getValue()), "");
+              ConstantInt::get(CI->getType(), CI->getValue()), "CToGV");
           appendToCompilerUsed(*F.getParent(), GV);
           I.setOperand(i, new LoadInst(GV->getValueType(), GV, "", &I));
         }
@@ -253,20 +263,20 @@ struct ConstantEncryption : public ModulePass {
         if (!(cryptoutils->get_range(100) <= ConstToGVProbTemp))
           continue;
         IntegerType *IT = cast<IntegerType>(BO->getType());
-        uint64_t dummy = 0;
-        if (IT->getBitWidth() == 8)
+        uint64_t dummy;
+        if (IT == Type::getInt8Ty(IT->getContext()))
           dummy = cryptoutils->get_uint8_t();
-        else if (IT->getBitWidth() == 16)
+        else if (IT == Type::getInt16Ty(IT->getContext()))
           dummy = cryptoutils->get_uint16_t();
-        else if (IT->getBitWidth() == 32)
+        else if (IT == Type::getInt32Ty(IT->getContext()))
           dummy = cryptoutils->get_uint32_t();
-        else if (IT->getBitWidth() == 64)
+        else if (IT == Type::getInt64Ty(IT->getContext()))
           dummy = cryptoutils->get_uint64_t();
-        else if (IT->getBitWidth() != 0)
+        else
           continue;
         GlobalVariable *GV = new GlobalVariable(
             M, BO->getType(), false, GlobalValue::LinkageTypes::PrivateLinkage,
-            ConstantInt::get(BO->getType(), dummy), "");
+            ConstantInt::get(BO->getType(), dummy), "CToGV");
         StoreInst *SI =
             new StoreInst(BO, GV, false, DL.getABITypeAlign(BO->getType()));
         SI->insertAfter(BO);
@@ -279,15 +289,16 @@ struct ConstantEncryption : public ModulePass {
   }
 
   void HandleConstantIntInitializerGV(GlobalVariable *GVPtr) {
-    if (!(flag || AreUsersInOneFunction(GVPtr)) || isDispatchOnceToken(GVPtr))
+    if (!(flag || AreUsersInOneFunction(GVPtr)) || isDispatchOnceToken(GVPtr) ||
+        isAtomicLoaded(GVPtr))
       return;
     // Prepare Types and Keys
     std::pair<ConstantInt *, ConstantInt *> keyandnew;
+    ConstantInt *Old = dyn_cast<ConstantInt>(GVPtr->getInitializer());
     bool hasHandled = true;
     if (handled_gvs.find(GVPtr) == handled_gvs.end()) {
       hasHandled = false;
-      ConstantInt *CI = dyn_cast<ConstantInt>(GVPtr->getInitializer());
-      keyandnew = PairConstantInt(CI);
+      keyandnew = PairConstantInt(Old);
       handled_gvs.insert(GVPtr);
     }
     ConstantInt *XORKey = keyandnew.first;
@@ -295,13 +306,31 @@ struct ConstantEncryption : public ModulePass {
     if (hasHandled || !XORKey || !newGVInit)
       return;
     GVPtr->setInitializer(newGVInit);
+    bool isSigned = XORKey->getValue().isSignBitSet() ||
+                    newGVInit->getValue().isSignBitSet() ||
+                    Old->getValue().isSignBitSet();
     for (User *U : GVPtr->users()) {
       BinaryOperator *XORInst = nullptr;
       if (LoadInst *LI = dyn_cast<LoadInst>(U)) {
-        XORInst = BinaryOperator::Create(Instruction::Xor, LI, XORKey);
-        XORInst->insertAfter(LI);
-        LI->replaceUsesWithIf(
-            XORInst, [XORInst](Use &U) { return U.getUser() != XORInst; });
+        if (LI->getType() != XORKey->getType()) {
+          Instruction *IntegerCast =
+              BitCastInst::CreateIntegerCast(LI, XORKey->getType(), isSigned);
+          IntegerCast->insertAfter(LI);
+          XORInst =
+              BinaryOperator::Create(Instruction::Xor, IntegerCast, XORKey);
+          XORInst->insertAfter(IntegerCast);
+          Instruction *IntegerCast2 =
+              BitCastInst::CreateIntegerCast(XORInst, LI->getType(), isSigned);
+          IntegerCast2->insertAfter(XORInst);
+          LI->replaceUsesWithIf(IntegerCast2, [IntegerCast](Use &U) {
+            return U.getUser() != IntegerCast;
+          });
+        } else {
+          XORInst = BinaryOperator::Create(Instruction::Xor, LI, XORKey);
+          XORInst->insertAfter(LI);
+          LI->replaceUsesWithIf(
+              XORInst, [XORInst](Use &U) { return U.getUser() != XORInst; });
+        }
       } else if (StoreInst *SI = dyn_cast<StoreInst>(U)) {
         XORInst = BinaryOperator::Create(Instruction::Xor, SI->getOperand(0),
                                          XORKey, "", SI);
@@ -322,6 +351,7 @@ struct ConstantEncryption : public ModulePass {
       return;
     BinaryOperator *NewOperand =
         BinaryOperator::Create(Instruction::Xor, New, Key, "", I);
+
     I->setOperand(opindex, NewOperand);
     if (SubstituteXorTemp &&
         cryptoutils->get_range(100) <= SubstituteXorProbTemp)
@@ -334,13 +364,14 @@ struct ConstantEncryption : public ModulePass {
       return std::make_pair(nullptr, nullptr);
     IntegerType *IT = cast<IntegerType>(C->getType());
     uint64_t K;
-    if (IT->getBitWidth() == 1 || IT->getBitWidth() == 8)
+    if (IT == Type::getInt1Ty(IT->getContext()) ||
+        IT == Type::getInt8Ty(IT->getContext()))
       K = cryptoutils->get_uint8_t();
-    else if (IT->getBitWidth() == 16)
+    else if (IT == Type::getInt16Ty(IT->getContext()))
       K = cryptoutils->get_uint16_t();
-    else if (IT->getBitWidth() == 32)
+    else if (IT == Type::getInt32Ty(IT->getContext()))
       K = cryptoutils->get_uint32_t();
-    else if (IT->getBitWidth() == 64)
+    else if (IT == Type::getInt64Ty(IT->getContext()))
       K = cryptoutils->get_uint64_t();
     else
       return std::make_pair(nullptr, nullptr);
