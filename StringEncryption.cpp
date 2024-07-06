@@ -11,6 +11,7 @@
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Obfuscation.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
+#include <set>
 
 using namespace llvm;
 
@@ -42,7 +43,11 @@ struct StringEncryption : public ModulePass {
   StringRef getPassName() const override { return "StringEncryption"; }
 
   bool handleableGV(GlobalVariable *GV) {
+#if LLVM_VERSION_MAJOR >= 18
+    if (GV->hasInitializer() && !GV->getSection().starts_with("llvm.") &&
+#else
     if (GV->hasInitializer() && !GV->getSection().startswith("llvm.") &&
+#endif
         !(GV->getSection().contains("__objc") &&
           !GV->getSection().contains("array")) &&
         !GV->getName().contains("OBJC") &&
@@ -58,7 +63,11 @@ struct StringEncryption : public ModulePass {
     // in runOnModule. We simple iterate function list and dispatch functions
     // to handlers
     this->appleptrauth = hasApplePtrauth(&M);
+#if LLVM_VERSION_MAJOR >= 17
+    this->opaquepointers = true;
+#else
     this->opaquepointers = !M.getContext().supportsTypedPointers();
+#endif
 
     for (Function &F : M)
       if (toObfuscate(flag, &F, "strenc")) {
@@ -386,7 +395,15 @@ struct StringEncryption : public ModulePass {
                std::pair<GlobalVariable *, GlobalVariable *>>::iterator iter =
                old2new.begin();
            iter != old2new.end(); ++iter) {
-        U->replaceUsesOfWith(iter->first, iter->second.second);
+        if (isa<Constant>(U) && !isa<GlobalValue>(U)) {
+          Constant *C = cast<Constant>(U);
+          for (Value *Op : C->operands())
+            if (Op == iter->first) {
+              C->handleOperandChange(iter->first, iter->second.second);
+              break;
+            }
+        } else
+          U->replaceUsesOfWith(iter->first, iter->second.second);
         iter->first->removeDeadConstantUsers();
       }
     } // End Replace Uses
@@ -538,7 +555,8 @@ struct StringEncryption : public ModulePass {
         ObjcGV->getInitializer()->setOperand(
             0,
             ConstantExpr::getBitCast(
-                NewPtrauthGV, Type::getInt32PtrTy(NewPtrauthGV->getContext())));
+                NewPtrauthGV,
+                Type::getInt32Ty(NewPtrauthGV->getContext())->getPointerTo()));
       }
     }
     return ObjcGV;
