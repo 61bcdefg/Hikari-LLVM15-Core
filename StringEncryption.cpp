@@ -386,7 +386,15 @@ struct StringEncryption : public ModulePass {
                std::pair<GlobalVariable *, GlobalVariable *>>::iterator iter =
                old2new.begin();
            iter != old2new.end(); ++iter) {
-        U->replaceUsesOfWith(iter->first, iter->second.second);
+        if (isa<Constant>(U) && !isa<GlobalValue>(U)) {
+          Constant *C = cast<Constant>(U);
+          for (Value *Op : C->operands())
+            if (Op == iter->first) {
+              C->handleOperandChange(iter->first, iter->second.second);
+              break;
+            }
+        } else
+          U->replaceUsesOfWith(iter->first, iter->second.second);
         iter->first->removeDeadConstantUsers();
       }
     } // End Replace Uses
