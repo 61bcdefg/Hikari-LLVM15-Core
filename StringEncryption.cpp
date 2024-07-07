@@ -12,6 +12,7 @@
 #include "llvm/Transforms/Obfuscation/Obfuscation.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include <set>
+#include <unordered_set>
 
 using namespace llvm;
 
@@ -149,19 +150,30 @@ struct StringEncryption : public ModulePass {
     }
   }
 
+  void HandleUser(User* U, SmallVector<GlobalVariable *, 32>& Globals, std::set<User *> &Users, std::unordered_set<User *> &VisitedUsers) {
+    VisitedUsers.emplace(U);
+    for (Value *Op: U->operands()) {
+      if (GlobalVariable *G = dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
+        if (User *U2 = dyn_cast<User>(Op))
+          Users.insert(U2);
+        Users.insert(U);
+        Globals.emplace_back(G);
+      } else if (User *U = dyn_cast<User>(Op)) {
+        if (!VisitedUsers.count(U))
+          HandleUser(U, Globals, Users, VisitedUsers);
+      }
+    }
+  }
+
   void HandleFunction(Function *Func) {
     FixFunctionConstantExpr(Func);
     SmallVector<GlobalVariable *, 32> Globals;
     std::set<User *> Users;
-    for (Instruction &I : instructions(Func))
-      for (Value *Op : I.operands())
-        if (GlobalVariable *G =
-                dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
-          if (User *U = dyn_cast<User>(Op))
-            Users.insert(U);
-          Users.insert(&I);
-          Globals.emplace_back(G);
-        }
+    {
+      std::unordered_set<User *> VisitedUsers;
+      for (Instruction &I : instructions(Func))
+        HandleUser(&I, Globals, Users, VisitedUsers);
+    }
     std::set<GlobalVariable *> rawStrings;
     std::set<GlobalVariable *> objCStrings;
     std::unordered_map<GlobalVariable *,
