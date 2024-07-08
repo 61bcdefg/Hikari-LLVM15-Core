@@ -70,14 +70,15 @@ struct IndirectBranch : public FunctionPass {
       for (BasicBlock &BB : F)
         if (!BB.isEntryBlock()) {
           indexmap[&BB] = i++;
-          BBs.emplace_back(EncryptJumpTargetTemp
-                               ? ConstantExpr::getGetElementPtr(
-                                     Type::getInt8Ty(M.getContext()),
-                                     ConstantExpr::getBitCast(
-                                         BlockAddress::get(&BB),
-                                         Type::getInt8PtrTy(M.getContext())),
-                                     encmap[&F])
-                               : BlockAddress::get(&BB));
+          BBs.emplace_back(
+              EncryptJumpTargetTemp
+                  ? ConstantExpr::getGetElementPtr(
+                        Type::getInt8Ty(M.getContext()),
+                        ConstantExpr::getBitCast(
+                            BlockAddress::get(&BB),
+                            Type::getInt8Ty(M.getContext())->getPointerTo()),
+                        encmap[&F])
+                  : BlockAddress::get(&BB));
         }
     }
     if (to_obf_funcs.size()) {
@@ -108,7 +109,7 @@ struct IndirectBranch : public FunctionPass {
 
     Type *Int8Ty = Type::getInt8Ty(M->getContext());
     Type *Int32Ty = Type::getInt32Ty(M->getContext());
-    Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
+    Type *Int8PtrTy = Type::getInt8Ty(M->getContext())->getPointerTo();
 
     Value *zero = ConstantInt::get(Int32Ty, 0);
 

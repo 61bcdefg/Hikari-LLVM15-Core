@@ -4,6 +4,7 @@
 #include "llvm/Transforms/Obfuscation/Flattening.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/LegacyLowerSwitch.h"

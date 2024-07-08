@@ -15,7 +15,6 @@
     You should have received a copy of the GNU Affero General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
@@ -28,6 +27,12 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
+#if LLVM_VERSION_MAJOR >= 17
+#include "llvm/ADT/SmallString.h"
+#include "llvm/TargetParser/Triple.h"
+#else
+#include "llvm/ADT/Triple.h"
+#endif
 #include "llvm/Transforms/Obfuscation/AntiHook.h"
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
@@ -105,11 +110,15 @@ struct AntiHook : public ModulePass {
       errs() << "Failed To Link PreCompiled AntiHooking IR From:"
              << PreCompiledIRPath << "\n";
     }
-    this->opaquepointers = !M.getContext().supportsTypedPointers();
+#if LLVM_VERSION_MAJOR >= 17
+    opaquepointers = true;
+#else
+    opaquepointers = !M.getContext().supportsTypedPointers();
+#endif
 
     if (triple.getVendor() == Triple::VendorType::Apple &&
         StructType::getTypeByName(M.getContext(), "struct._objc_method")) {
-      Type *Int8PtrTy = Type::getInt8PtrTy(M.getContext());
+      Type *Int8PtrTy = Type::getInt8Ty(M.getContext())->getPointerTo();
       M.getOrInsertFunction("objc_getClass",
                             FunctionType::get(Int8PtrTy, {Int8PtrTy}, false));
       M.getOrInsertFunction("sel_registerName",
@@ -161,7 +170,11 @@ struct AntiHook : public ModulePass {
               if (Called && Called->isDeclaration() &&
                   Called->isExternalLinkage(Called->getLinkage()) &&
                   !Called->isIntrinsic() &&
+#if LLVM_VERSION_MAJOR >= 18
+                  !Called->getName().starts_with("clang.")) {
+#else
                   !Called->getName().startswith("clang.")) {
+#endif
                 GlobalVariable *GV = cast<GlobalVariable>(M.getOrInsertGlobal(
                     ("AntiRebindSymbol_" + Called->getName()).str(),
                     Called->getType()));
@@ -198,6 +211,15 @@ struct AntiHook : public ModulePass {
             for (User *U3 : U2->users())
               for (User *U4 : U3->users()) {
                 if (opaquepointers) {
+#if LLVM_VERSION_MAJOR >= 18
+                  if (U4->getName().starts_with("_OBJC_$_INSTANCE_METHODS") ||
+                      U4->getName().starts_with("_OBJC_$_CLASS_METHODS"))
+                    methodListGV = dyn_cast<GlobalVariable>(U4);
+                } else
+                  for (User *U5 : U4->users()) {
+                    if (U5->getName().starts_with("_OBJC_$_INSTANCE_METHODS") ||
+                        U5->getName().starts_with("_OBJC_$_CLASS_METHODS"))
+#else
                   if (U4->getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
                       U4->getName().startswith("_OBJC_$_CLASS_METHODS"))
                     methodListGV = dyn_cast<GlobalVariable>(U4);
@@ -205,6 +227,7 @@ struct AntiHook : public ModulePass {
                   for (User *U5 : U4->users()) {
                     if (U5->getName().startswith("_OBJC_$_INSTANCE_METHODS") ||
                         U5->getName().startswith("_OBJC_$_CLASS_METHODS"))
+#endif
                       methodListGV = dyn_cast<GlobalVariable>(U5);
                   }
               }
@@ -216,7 +239,11 @@ struct AntiHook : public ModulePass {
           ConstantDataSequential *SELNameCDS =
               cast<ConstantDataSequential>(SELNameGV->getInitializer());
           bool classmethod =
+#if LLVM_VERSION_MAJOR >= 18
+              methodListGV->getName().starts_with("_OBJC_$_CLASS_METHODS");
+#else
               methodListGV->getName().startswith("_OBJC_$_CLASS_METHODS");
+#endif
           std::string classname =
               methodListGV->getName()
                   .substr(strlen(classmethod ? "_OBJC_$_CLASS_METHODS_"
@@ -248,7 +275,7 @@ struct AntiHook : public ModulePass {
 
     Type *Int64Ty = Type::getInt64Ty(F->getContext());
     Type *Int32Ty = Type::getInt32Ty(F->getContext());
-    Type *Int32PtrTy = Type::getInt32PtrTy(F->getContext());
+    Type *Int32PtrTy = Type::getInt32Ty(F->getContext())->getPointerTo();
 
     Value *Load =
         IRBDetect.CreateLoad(Int32Ty, IRBDetect.CreateBitCast(F, Int32PtrTy));
@@ -301,7 +328,7 @@ struct AntiHook : public ModulePass {
     IRBuilder<> IRBA(A);
     IRBuilder<> IRBB(B);
 
-    Type *Int8PtrTy = Type::getInt8PtrTy(M->getContext());
+    Type *Int8PtrTy = Type::getInt8Ty(M->getContext())->getPointerTo();
 
     Value *GetClass = IRBA.CreateCall(M->getFunction("objc_getClass"),
                                       {IRBA.CreateGlobalStringPtr(classname)});
