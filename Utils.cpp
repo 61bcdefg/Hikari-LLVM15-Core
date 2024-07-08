@@ -81,16 +81,26 @@ bool readFlag(Function *f, std::string attribute) {
     Instruction *Inst = &I;
     if (CallInst *CI = dyn_cast<CallInst>(Inst)) {
       if (CI->getCalledFunction() != nullptr &&
+#if LLVM_VERSION_MAJOR >= 18
           CI->getCalledFunction()->getName().starts_with("hikari_" +
                                                          attribute)) {
+#else
+          CI->getCalledFunction()->getName().startswith("hikari_" +
+                                                         attribute)) {
+#endif
         CI->eraseFromParent();
         return true;
       }
     }
     if (InvokeInst *II = dyn_cast<InvokeInst>(Inst)) {
       if (II->getCalledFunction() != nullptr &&
+#if LLVM_VERSION_MAJOR >= 18
           II->getCalledFunction()->getName().starts_with("hikari_" +
                                                          attribute)) {
+#else
+          II->getCalledFunction()->getName().startswith("hikari_" +
+                                                         attribute)) {
+#endif
         BasicBlock *normalDest = II->getNormalDest();
         BasicBlock *unwindDest = II->getUnwindDest();
         BasicBlock *parent = II->getParent();
@@ -183,7 +193,11 @@ bool readFlagUint32OptVal(Function *f, std::string opt, uint32_t *val) {
     }
     if (InvokeInst *II = dyn_cast<InvokeInst>(Inst)) {
       if (II->getCalledFunction() != nullptr &&
+#if LLVM_VERSION_MAJOR >= 18
           II->getCalledFunction()->getName().starts_with("hikari_" + opt)) {
+#else
+          II->getCalledFunction()->getName().startswith("hikari_" + opt)) {
+#endif
         if (ConstantInt *C = dyn_cast<ConstantInt>(II->getArgOperand(0))) {
           *val = (uint32_t)C->getValue().getZExtValue();
           BasicBlock *normalDest = II->getNormalDest();
