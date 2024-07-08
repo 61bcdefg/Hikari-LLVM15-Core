@@ -179,7 +179,11 @@ struct Obfuscation : public ModulePass {
     SmallVector<Function *, 8> toDelete;
     for (Function &F : M)
       if (F.isDeclaration() && F.hasName() &&
+#if LLVM_VERSION_MAJOR >= 18
           F.getName().starts_with("hikari_")) {
+#else
+          F.getName().startswith("hikari_")) {
+#endif
         for (User *U : F.users())
           if (Instruction *Inst = dyn_cast<Instruction>(U))
             Inst->eraseFromParent();
