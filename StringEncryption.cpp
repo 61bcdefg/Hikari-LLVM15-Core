@@ -96,34 +96,9 @@ struct StringEncryption : public ModulePass {
     return true;
   }
 
-  void processStructMembers(ConstantStruct *CS,
-                            SmallVector<GlobalVariable *, 32> *unhandleablegvs,
-                            SmallVector<GlobalVariable *, 32> *Globals,
-                            std::set<User *> *Users, bool *breakFor) {
-    for (unsigned i = 0; i < CS->getNumOperands(); i++) {
-      Constant *Op = CS->getOperand(i);
-      if (GlobalVariable *GV =
-              dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
-        if (!handleableGV(GV)) {
-          unhandleablegvs->emplace_back(GV);
-          continue;
-        }
-        Users->insert(opaquepointers ? CS : Op);
-        if (std::find(Globals->begin(), Globals->end(), GV) == Globals->end()) {
-          Globals->emplace_back(GV);
-          *breakFor = true;
-        }
-      } else if (ConstantStruct *NestedCS = dyn_cast<ConstantStruct>(Op)) {
-        processStructMembers(NestedCS, unhandleablegvs, Globals, Users,
-                             breakFor);
-      } else if (ConstantArray *NestedCA = dyn_cast<ConstantArray>(Op)) {
-        processArrayMembers(NestedCA, unhandleablegvs, Globals, Users,
-                            breakFor);
-      }
-    }
-  }
-
-  void processArrayMembers(ConstantArray *CA,
+  void
+  processConstantAggregate(GlobalVariable *strGV, ConstantAggregate *CA,
+                           std::set<GlobalVariable *> *rawStrings,
                            SmallVector<GlobalVariable *, 32> *unhandleablegvs,
                            SmallVector<GlobalVariable *, 32> *Globals,
                            std::set<User *> *Users, bool *breakFor) {
@@ -140,20 +115,26 @@ struct StringEncryption : public ModulePass {
           Globals->emplace_back(GV);
           *breakFor = true;
         }
-      } else if (ConstantStruct *NestedCS = dyn_cast<ConstantStruct>(Op)) {
-        processStructMembers(NestedCS, unhandleablegvs, Globals, Users,
-                             breakFor);
-      } else if (ConstantArray *NestedCA = dyn_cast<ConstantArray>(Op)) {
-        processArrayMembers(NestedCA, unhandleablegvs, Globals, Users,
-                            breakFor);
+      } else if (ConstantAggregate *NestedCA =
+                     dyn_cast<ConstantAggregate>(Op)) {
+        processConstantAggregate(strGV, NestedCA, rawStrings, unhandleablegvs,
+                                 Globals, Users, breakFor);
+      } else if (isa<ConstantDataSequential>(Op)) {
+        if (CA->getNumOperands() != 1)
+          continue;
+        Users->insert(CA);
+        rawStrings->insert(strGV);
       }
     }
   }
 
-  void HandleUser(User* U, SmallVector<GlobalVariable *, 32>& Globals, std::set<User *> &Users, std::unordered_set<User *> &VisitedUsers) {
+  void HandleUser(User *U, SmallVector<GlobalVariable *, 32> &Globals,
+                  std::set<User *> &Users,
+                  std::unordered_set<User *> &VisitedUsers) {
     VisitedUsers.emplace(U);
-    for (Value *Op: U->operands()) {
-      if (GlobalVariable *G = dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
+    for (Value *Op : U->operands()) {
+      if (GlobalVariable *G =
+              dyn_cast<GlobalVariable>(Op->stripPointerCasts())) {
         if (User *U2 = dyn_cast<User>(Op))
           Users.insert(U2);
         Users.insert(U);
@@ -220,14 +201,10 @@ struct StringEncryption : public ModulePass {
                       ->stripPointerCasts()));
             } else if (isa<ConstantDataSequential>(GV->getInitializer())) {
               rawStrings.insert(GV);
-            } else if (ConstantStruct *CS =
-                           dyn_cast<ConstantStruct>(GV->getInitializer())) {
-              processStructMembers(CS, &unhandleablegvs, &Globals, &Users,
-                                   &breakThisFor);
-            } else if (ConstantArray *CA =
-                           dyn_cast<ConstantArray>(GV->getInitializer())) {
-              processArrayMembers(CA, &unhandleablegvs, &Globals, &Users,
-                                  &breakThisFor);
+            } else if (ConstantAggregate *CA =
+                           dyn_cast<ConstantAggregate>(GV->getInitializer())) {
+              processConstantAggregate(GV, CA, &rawStrings, &unhandleablegvs,
+                                       &Globals, &Users, &breakThisFor);
             }
           } else {
             unhandleablegvs.emplace_back(GV);
@@ -261,7 +238,11 @@ struct StringEncryption : public ModulePass {
           GV->getInitializer()->isNullValue())
         continue;
       ConstantDataSequential *CDS =
-          cast<ConstantDataSequential>(GV->getInitializer());
+          dyn_cast<ConstantDataSequential>(GV->getInitializer());
+      bool rust_string = !CDS;
+      if (rust_string)
+        CDS = cast<ConstantDataSequential>(
+            cast<ConstantAggregate>(GV->getInitializer())->getOperand(0));
       Type *ElementTy = CDS->getElementType();
       if (!ElementTy->isIntegerTy()) {
 #if LLVM_VERSION_MAJOR >= 16
@@ -372,10 +353,20 @@ struct StringEncryption : public ModulePass {
           EncryptedConst, "EncryptedString", nullptr, GV->getThreadLocalMode(),
           GV->getType()->getAddressSpace());
       genedgv.emplace_back(EncryptedRawGV);
-      GlobalVariable *DecryptSpaceGV = new GlobalVariable(
-          *M, DummyConst->getType(), false, GV->getLinkage(), DummyConst,
-          "DecryptSpace", nullptr, GV->getThreadLocalMode(),
-          GV->getType()->getAddressSpace());
+      GlobalVariable *DecryptSpaceGV;
+      if (rust_string) {
+        ConstantAggregate *CA = cast<ConstantAggregate>(GV->getInitializer());
+        CA->setOperand(0, DummyConst);
+        DecryptSpaceGV = new GlobalVariable(
+            *M, GV->getValueType(), false, GV->getLinkage(), CA,
+            "DecryptSpaceRust", nullptr, GV->getThreadLocalMode(),
+            GV->getType()->getAddressSpace());
+      } else {
+        DecryptSpaceGV = new GlobalVariable(
+            *M, DummyConst->getType(), false, GV->getLinkage(), DummyConst,
+            "DecryptSpace", nullptr, GV->getThreadLocalMode(),
+            GV->getType()->getAddressSpace());
+      }
       genedgv.emplace_back(DecryptSpaceGV);
       old2new[GV] = std::make_pair(EncryptedRawGV, DecryptSpaceGV);
       GV2Keys[DecryptSpaceGV] = std::make_pair(KeyConst, EncryptedRawGV);
@@ -419,7 +410,7 @@ struct StringEncryption : public ModulePass {
         iter->first->removeDeadConstantUsers();
       }
     } // End Replace Uses
-      // CleanUp Old ObjC GVs
+    // CleanUp Old ObjC GVs
     for (GlobalVariable *GV : objCStrings) {
       GlobalVariable *PtrauthGV = nullptr;
       if (appleptrauth) {
@@ -584,6 +575,11 @@ struct StringEncryption : public ModulePass {
                             std::pair<Constant *, GlobalVariable *>>::iterator
              iter = GV2Keys.begin();
          iter != GV2Keys.end(); ++iter) {
+      bool rust_string =
+          !isa<ConstantDataSequential>(iter->first->getInitializer());
+      ConstantAggregate *CA =
+          rust_string ? cast<ConstantAggregate>(iter->first->getInitializer())
+                      : nullptr;
       Constant *KeyConst = iter->second.first;
       ConstantDataArray *CastedCDA = cast<ConstantDataArray>(KeyConst);
       // Prevent optimization of encrypted data
@@ -604,8 +600,17 @@ struct StringEncryption : public ModulePass {
         Value *EncryptedGEP =
             IRB.CreateGEP(iter->second.second->getValueType(),
                           iter->second.second, {zero, offset});
-        Value *DecryptedGEP = IRB.CreateGEP(iter->first->getValueType(),
-                                            iter->first, {zero, offset2});
+        Value *DecryptedGEP =
+            rust_string
+                ? IRB.CreateGEP(
+                      CA->getOperand(0)->getType(),
+                      IRB.CreateGEP(
+                          CA->getType(), iter->first,
+                          {zero, ConstantInt::getNullValue(
+                                     Type::getInt64Ty(B->getContext()))}),
+                      {zero, offset2})
+                : IRB.CreateGEP(iter->first->getValueType(), iter->first,
+                                {zero, offset2});
         LoadInst *LI = IRB.CreateLoad(CastedCDA->getElementType(), EncryptedGEP,
                                       "EncryptedChar");
         Value *XORed = IRB.CreateXor(LI, CastedCDA->getElementAsConstant(i));
