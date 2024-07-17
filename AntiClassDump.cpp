@@ -30,6 +30,7 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <deque>
 #include <map>
+#include <unordered_map>
 
 using namespace llvm;
 
