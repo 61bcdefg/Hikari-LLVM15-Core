@@ -43,6 +43,10 @@ struct StringEncryption : public ModulePass {
 
   StringRef getPassName() const override { return "StringEncryption"; }
 
+  static bool GVComp(const GlobalVariable *a, const GlobalVariable *b) {
+    return a->getName() < b->getName();
+  }
+
   bool handleableGV(GlobalVariable *GV) {
 #if LLVM_VERSION_MAJOR >= 18
     if (GV->hasInitializer() && !GV->getSection().starts_with("llvm.") &&
@@ -98,7 +102,8 @@ struct StringEncryption : public ModulePass {
 
   void
   processConstantAggregate(GlobalVariable *strGV, ConstantAggregate *CA,
-                           std::set<GlobalVariable *> *rawStrings,
+                           std::set<GlobalVariable *,
+                                    decltype(&GVComp)> *rawStrings,
                            SmallVector<GlobalVariable *, 32> *unhandleablegvs,
                            SmallVector<GlobalVariable *, 32> *Globals,
                            std::set<User *> *Users, bool *breakFor) {
@@ -155,8 +160,8 @@ struct StringEncryption : public ModulePass {
       for (Instruction &I : instructions(Func))
         HandleUser(&I, Globals, Users, VisitedUsers);
     }
-    std::set<GlobalVariable *> rawStrings;
-    std::set<GlobalVariable *> objCStrings;
+    std::set<GlobalVariable *, decltype(&GVComp)> rawStrings(&GVComp);
+    std::set<GlobalVariable *, decltype(&GVComp)> objCStrings(&GVComp);
     std::unordered_map<GlobalVariable *,
                        std::pair<Constant *, GlobalVariable *>>
         GV2Keys;
@@ -562,10 +567,16 @@ struct StringEncryption : public ModulePass {
                          std::pair<Constant *, GlobalVariable *>> &GV2Keys) {
     IRBuilder<> IRB(B);
     Value *zero = ConstantInt::get(Type::getInt32Ty(B->getContext()), 0);
-    for (std::unordered_map<GlobalVariable *,
-                            std::pair<Constant *, GlobalVariable *>>::iterator
-             iter = GV2Keys.begin();
-         iter != GV2Keys.end(); ++iter) {
+    std::vector<std::pair<GlobalVariable *,
+                std::pair<Constant *, GlobalVariable *>>> SortedGV2Keys;
+    std::copy(GV2Keys.begin(), GV2Keys.end(),
+              std::back_inserter(SortedGV2Keys));
+    std::sort(SortedGV2Keys.begin(), SortedGV2Keys.end(),
+      [](const auto& a, const auto& b) {
+        return a.first->getName() < b.first->getName();
+    });
+    for (auto iter = SortedGV2Keys.begin();
+         iter != SortedGV2Keys.end(); ++iter) {
       bool rust_string =
           !isa<ConstantDataSequential>(iter->first->getInitializer());
       ConstantAggregate *CA =
