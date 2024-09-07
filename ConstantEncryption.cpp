@@ -28,7 +28,7 @@
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/compat/CallSite.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include <set>
+#include <unordered_set>
 
 using namespace llvm;
 
@@ -73,7 +73,7 @@ struct ConstantEncryption : public ModulePass {
   static char ID;
   bool flag;
   bool dispatchonce;
-  std::set<GlobalVariable *> handled_gvs;
+  std::unordered_set<GlobalVariable *> handled_gvs;
   ConstantEncryption(bool flag) : ModulePass(ID) { this->flag = flag; }
   ConstantEncryption() : ModulePass(ID) { this->flag = true; }
   bool shouldEncryptConstant(Instruction *I) {
