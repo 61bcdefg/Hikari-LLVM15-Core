@@ -16,6 +16,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/LowerSwitch.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <unordered_set>
 
 using namespace llvm;
 
@@ -37,7 +38,7 @@ struct IndirectBranch : public FunctionPass {
   bool initialized;
   std::unordered_map<BasicBlock *, unsigned long long> indexmap;
   std::unordered_map<Function *, ConstantInt *> encmap;
-  std::set<Function *> to_obf_funcs;
+  std::unordered_set<Function *> to_obf_funcs;
   IndirectBranch() : FunctionPass(ID) {
     this->flag = true;
     this->initialized = false;

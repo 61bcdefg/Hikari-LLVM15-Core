@@ -11,7 +11,6 @@
 #include "llvm/Transforms/Obfuscation/CryptoUtils.h"
 #include "llvm/Transforms/Obfuscation/Obfuscation.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
-#include <set>
 #include <unordered_set>
 
 using namespace llvm;
@@ -98,10 +97,10 @@ struct StringEncryption : public ModulePass {
 
   void
   processConstantAggregate(GlobalVariable *strGV, ConstantAggregate *CA,
-                           std::set<GlobalVariable *> *rawStrings,
+                           std::unordered_set<GlobalVariable *> *rawStrings,
                            SmallVector<GlobalVariable *, 32> *unhandleablegvs,
                            SmallVector<GlobalVariable *, 32> *Globals,
-                           std::set<User *> *Users, bool *breakFor) {
+                           std::unordered_set<User *> *Users, bool *breakFor) {
     for (unsigned i = 0; i < CA->getNumOperands(); i++) {
       Constant *Op = CA->getOperand(i);
       if (GlobalVariable *GV =
@@ -129,7 +128,7 @@ struct StringEncryption : public ModulePass {
   }
 
   void HandleUser(User *U, SmallVector<GlobalVariable *, 32> &Globals,
-                  std::set<User *> &Users,
+                  std::unordered_set<User *> &Users,
                   std::unordered_set<User *> &VisitedUsers) {
     VisitedUsers.emplace(U);
     for (Value *Op : U->operands()) {
@@ -149,14 +148,14 @@ struct StringEncryption : public ModulePass {
   void HandleFunction(Function *Func) {
     FixFunctionConstantExpr(Func);
     SmallVector<GlobalVariable *, 32> Globals;
-    std::set<User *> Users;
+    std::unordered_set<User *> Users;
     {
       std::unordered_set<User *> VisitedUsers;
       for (Instruction &I : instructions(Func))
         HandleUser(&I, Globals, Users, VisitedUsers);
     }
-    std::set<GlobalVariable *> rawStrings;
-    std::set<GlobalVariable *> objCStrings;
+    std::unordered_set<GlobalVariable *> rawStrings;
+    std::unordered_set<GlobalVariable *> objCStrings;
     std::unordered_map<GlobalVariable *,
                        std::pair<Constant *, GlobalVariable *>>
         GV2Keys;
