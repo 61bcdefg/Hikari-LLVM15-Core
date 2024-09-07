@@ -129,7 +129,7 @@ struct IndirectBranch : public FunctionPass {
               (BasicBlock::iterator)Func.getEntryBlock().front())
         IRBEntry->SetInsertPoint(Func.getEntryBlock().getTerminator());
       IRBuilder<NoFolder> *IRBBI = new IRBuilder<NoFolder>(BI);
-      SmallVector<BasicBlock *, 16> BBs;
+      SmallVector<BasicBlock *, 2> BBs;
       // We use the condition's evaluation result to generate the GEP
       // instruction  False evaluates to 0 while true evaluates to 1.  So here
       // we insert the false block first
@@ -142,7 +142,7 @@ struct IndirectBranch : public FunctionPass {
       if (BI->isConditional() ||
           indexmap.find(BI->getSuccessor(0)) == indexmap.end()) {
         ArrayType *AT = ArrayType::get(Int8PtrTy, BBs.size());
-        SmallVector<Constant *, 16> BlockAddresses;
+        SmallVector<Constant *, 2> BlockAddresses;
         for (BasicBlock *BB : BBs)
           BlockAddresses.emplace_back(
               EncryptJumpTargetTemp ? ConstantExpr::getGetElementPtr(
